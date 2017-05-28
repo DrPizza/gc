@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.26403.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "gc", "gc\gc.vcxproj", "{D25C8108-906D-4EC8-B0C4-F2030ECFF7D0}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "gc-test", "gc-test\gc-test.vcxproj", "{EE5E89D0-12CB-46E9-8907-6D970C949896}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D25C8108-906D-4EC8-B0C4-F2030ECFF7D0}.Debug|x64.ActiveCfg = Debug|x64
+		{D25C8108-906D-4EC8-B0C4-F2030ECFF7D0}.Debug|x64.Build.0 = Debug|x64
+		{D25C8108-906D-4EC8-B0C4-F2030ECFF7D0}.Release|x64.ActiveCfg = Release|x64
+		{D25C8108-906D-4EC8-B0C4-F2030ECFF7D0}.Release|x64.Build.0 = Release|x64
+		{EE5E89D0-12CB-46E9-8907-6D970C949896}.Debug|x64.ActiveCfg = Debug|x64
+		{EE5E89D0-12CB-46E9-8907-6D970C949896}.Debug|x64.Build.0 = Debug|x64
+		{EE5E89D0-12CB-46E9-8907-6D970C949896}.Release|x64.ActiveCfg = Release|x64
+		{EE5E89D0-12CB-46E9-8907-6D970C949896}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
