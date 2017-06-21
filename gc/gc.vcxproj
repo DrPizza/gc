@@ -85,6 +85,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="gc\circular-array.hpp" />
     <ClInclude Include="gc\gc-macros.hpp" />
     <ClInclude Include="gc\gc.hpp" />
     <ClInclude Include="gc\lock.hpp" />

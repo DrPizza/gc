@@ -37,9 +37,11 @@
 #pragma warning(disable: 4365) // warning C4365: '%s': conversion from '%s' to '%s', signed/unsigned mismatch
 #pragma warning(disable: 4464) // warning C4464: relative include path contains '..'
 #pragma warning(disable: 4574) // warning C4574: '%s' is defined to be '%s': did you mean to use '#if %s'?
-
-#include <tbb/concurrent_queue.h>
-#include <tbb/enumerable_thread_specific.h>
+//
+//#include <tbb/concurrent_queue.h>
+//#include <tbb/enumerable_thread_specific.h>
+//
+//#include <ppl.h>
 
 #pragma warning(pop)
 
@@ -830,14 +832,20 @@ namespace gc
 
 	struct thread_data : reference_registry
 	{
-		thread_data() {
+		thread_data() : is_mutator_thread(true) {
+			++mutator_thread_count;
 			globals.register_mutator_thread(this);
 		}
 
 		~thread_data() {
-			globals.unregister_mutator_thread();
+			if(is_mutator_thread) {
+				--mutator_thread_count;
+				globals.unregister_mutator_thread();
+			}
 		}
 	
+		thread_data(const thread_data&) = delete;
+
 		struct guard_unsafe
 		{
 			guard_unsafe() {
@@ -853,6 +861,12 @@ namespace gc
 			std::lock_guard<std::recursive_mutex> guard(unsafe);
 			return reference_registry::get_snapshot();
 		}
+
+		void set_as_gc_thread() {
+			globals.unregister_mutator_thread();
+			is_mutator_thread = false;
+			--mutator_thread_count;
+		}
 	
 	private:
 		void enter_unsafe() {
@@ -864,6 +878,10 @@ namespace gc
 		}
 	
 		std::recursive_mutex unsafe;
+
+		bool is_mutator_thread;
+
+		static std::atomic<size_t> mutator_thread_count;
 	};
 
 	template<typename T, typename... Args>

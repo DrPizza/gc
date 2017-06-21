@@ -193,7 +193,7 @@ int main() {
 
 	{
 		struct alignas(16) X {
-			X() : val(0) {}
+			X() noexcept : val(0) {}
 			X(size_t v) : val(v) {}
 			X(const X&) = default;
 
@@ -207,8 +207,8 @@ int main() {
 			std::cout << popped->val << std::endl;
 		}
 		auto stolen = wsq.steal();
-		if(stolen.second) {
-			std::cout << stolen.second->val << std::endl;
+		if(std::get<1>(stolen)) {
+			std::cout << std::get<1>(stolen)->val << std::endl;
 		}
 	}
 

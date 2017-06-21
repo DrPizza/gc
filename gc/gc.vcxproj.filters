@@ -33,6 +33,9 @@
     <ClInclude Include="gc\ws-queue.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="gc\circular-array.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\stdafx.cpp">

@@ -4,7 +4,6 @@
 
 namespace gc
 {
-
 	std::array<std::atomic<size_t>, get_max_arenas()> current_arena_nmt;
 	std::array<arena, get_max_arenas()> arenas;
 
@@ -13,6 +12,8 @@ namespace gc
 	thread_local thread_data this_gc_thread;
 
 	collector the_gc;
+
+	std::atomic<size_t> thread_data::mutator_thread_count;
 
 	gc_bits gc_bits::_gc_build_reference(void* memory) {
 		gc_bits unresolved = arenas[gc_bits::young]._gc_unresolve(memory);
