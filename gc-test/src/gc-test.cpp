@@ -174,7 +174,6 @@ struct combined : left, right
 
 int main() {
 	using namespace gc;
-
 	{
 		work_stealing_queue<void*> wsq;
 		wsq.push(nullptr);
@@ -207,8 +206,9 @@ int main() {
 			std::cout << popped->val << std::endl;
 		}
 		auto stolen = wsq.steal();
-		if(std::get<1>(stolen)) {
-			std::cout << std::get<1>(stolen)->val << std::endl;
+
+		if(auto x = std::get_if<X>(&stolen)) {
+			std::cout << x->val << std::endl;
 		}
 	}
 
@@ -238,7 +238,7 @@ int main() {
 
 	//my_object* prohibited = new my_object();
 
-	gc::visitor vis;
+	visitor vis;
 	combined c;
 	c._gc_trace(&vis);
 

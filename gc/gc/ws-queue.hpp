@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <atomic>
+#include <variant>
 #include <optional>
 #include <memory>
 #include <utility>
@@ -14,6 +15,9 @@
 
 namespace gc
 {
+	struct empty_t {};
+	struct abort_t {};
+
 	template<typename T>
 	struct work_stealing_queue {
 		work_stealing_queue() : top(0ui64), bottom(0ui64), arr(array_type::make_circular_array(5)) {
@@ -57,19 +61,21 @@ namespace gc
 			}
 		}
 
-		std::tuple<bool, std::optional<T>> steal() {
+		using stolen_value_t = std::variant<empty_t, abort_t, T>;
+
+		stolen_value_t steal() {
 			uint64_t t = top.load(std::memory_order_acquire);
 			std::atomic_thread_fence(std::memory_order_seq_cst);
 			uint64_t b = bottom.load(std::memory_order_acquire);
 			if(t < b) {
 				array_type* a = arr.load(std::memory_order_acquire);
-				std::optional<T> x = a->get(t);
+				T x = a->get(t);
 				if(!top.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
-					return std::make_tuple(false, std::nullopt);
+					return abort_t{};
 				}
-				return std::make_tuple(true, x);
+				return x;
 			}
-			return std::make_tuple(true, std::nullopt);
+			return empty_t{};
 		}
 
 	private:
