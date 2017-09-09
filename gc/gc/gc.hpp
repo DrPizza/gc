@@ -57,17 +57,17 @@ namespace gc
 			{
 				size_t page_offset : 12; // 4K pages => 12 bit page offset
 				size_t page_number : 28;
-				size_t arena       : 2;  // TODO: create multiple arenas for different generations, with promotion from young to old
+				size_t generation  : 2;
 				size_t nmt         : 2;
 			} address;
 			struct
 			{
-				size_t raw_address : 44;
-				size_t colour : 2;
-				size_t relocate : 2;  // 0 = resident, 1 = moving, 2 = moved
-				size_t reference_count : 2;  // 0/1/2 = rced, 3 = gced
+				size_t raw_address       : 44;
+				size_t colour            : 2;
+				size_t relocate          : 2;  // 0 = resident, 1 = moving, 2 = moved
+				size_t reference_count   : 2;  // 0/1/2 = rced, 3 = gced
 				size_t needs_destruction : 1;
-				size_t is_embedded : 1; // embedded objects aren't tracked separately
+				size_t is_embedded       : 1; // embedded objects aren't tracked separately
 			} header;
 			struct
 			{
@@ -96,10 +96,10 @@ namespace gc
 		};
 		enum
 		{
-			white = 0,
-			grey = 1,
-			black = 2,
-			free = 3
+			white_or_black = 0, // black: reachable and scanned
+			black_or_white = 1, // white: unreachable and scanned
+			grey           = 2, // grey:  reachable and unscanned
+			//free           = 3  // unreachable
 		};
 
 		static gc_bits _gc_build_reference(void* memory);
@@ -111,11 +111,6 @@ namespace gc
 
 	//static_assert(gc_pointer::is_always_lock_free(), "gc_pointer isn't lock-free");
 
-	static constexpr size_t get_max_arenas() {
-		return gc_bits::max_arenas;
-	}
-
-	extern std::array<std::atomic<size_t>, get_max_arenas()> current_arena_nmt;
 
 	static constexpr size_t get_max_ref_count() noexcept {
 		return 3;
@@ -142,34 +137,6 @@ namespace gc
 		}
 	};
 
-	struct collector
-	{
-		void queue_object(raw_reference*) {
-
-		}
-
-		void mark() {
-
-		}
-
-		void relocate() {
-
-		}
-
-		void remap() {
-
-		}
-
-		void finalize() {
-
-		}
-
-	private:
-		using mark_queue = void;
-	};
-
-	extern collector the_gc;
-
 	struct arena
 	{
 		static constexpr size_t      size = 1 << 30;
@@ -189,28 +156,20 @@ namespace gc
 		arena& operator=(const arena&) = delete;
 		arena& operator=(arena&&) = delete;
 
-		static constexpr size_t alignment = 512 / CHAR_BIT; // AVX512 alignment is the worst we're ever likely to see
-		static_assert(is_power_of_two(alignment), "alignment isn't a power of two");
+		static constexpr size_t maximum_alignment = 512 / CHAR_BIT; // AVX512 alignment is the worst we're ever likely to see
+		static_assert(is_power_of_two(maximum_alignment), "maximum_alignment isn't a power of two");
 
-		struct alignas(alignment) allocation_header {
+		struct allocation_header {
 			std::atomic<size_t> allocated_size;
-			std::atomic_flag    in_use;
-			size_t requested_size;
-			size_t base_offset;
-			size_t base_page;
-			size_t last_offset;
-			size_t last_page;
 		};
-
-		static_assert(sizeof(allocation_header) <= alignment, "arena::allocation_header is oversized");
 
 		void* allocate(size_t amount);
 
 		void deallocate(void* region);
 		bool is_protected(const gc_bits location) const;
 
-		size_t available() const noexcept {
-			return size - (high_watermark.load(std::memory_order_acquire) - low_watermark.load(std::memory_order_acquire));
+		size_t approximately_available() const noexcept {
+			return size - (high_watermark.load(std::memory_order_relaxed) - low_watermark.load(std::memory_order_relaxed));
 		}
 
 		gc_bits get_new_location(const gc_bits old_location) const noexcept {
@@ -236,11 +195,44 @@ namespace gc
 			value.bits.address.page_offset = offset % page_size;
 			return value;
 		}
-
-		std::unique_ptr<std::array<std::atomic<size_t>, page_count> > page_usage;
 	};
 
-	extern std::array<arena, get_max_arenas()> arenas;
+	struct collector {
+		void queue_object(object_base*);
+
+		void collect();
+
+		void mark();
+
+		void relocate() {
+
+		}
+
+		void remap() {
+
+		}
+
+		void finalize() {
+
+		}
+
+		arena the_arena;
+		std::atomic<size_t> current_nmt;
+		std::atomic<size_t> condemned_colour;
+		std::atomic<size_t> scanned_colour;
+
+	private:
+		using root_set = std::vector<object_base*>;
+
+		void flip();
+
+		void scan_roots();
+
+
+		using mark_queue = void;
+	};
+
+	extern collector the_gc;
 
 	template<typename T>
 	struct reference;
@@ -279,8 +271,8 @@ namespace gc
 		//virtual void* _gc_get_start() const = 0;
 
 	protected:
-		void _gc_set_block_unsafe(size_t arena, void* addr) noexcept {
-			gc_bits location = arenas[arena]._gc_unresolve(addr);
+		void _gc_set_block_unsafe(void* addr) noexcept {
+			gc_bits location = the_gc.the_arena._gc_unresolve(addr);
 			gc_bits current = count.load(std::memory_order_acquire);
 			current.bits.address = location.bits.address;
 			count.store(current, std::memory_order_release);
@@ -288,7 +280,7 @@ namespace gc
 
 		void* _gc_get_block() noexcept {
 			gc_bits bits = count.load(std::memory_order_acquire);
-			return arenas[bits.bits.address.arena]._gc_resolve(bits);
+			return the_gc.the_arena._gc_resolve(bits);
 		}
 
 	private:
@@ -500,17 +492,17 @@ namespace gc
 				return nullptr;
 			}
 			gc_bits value = _gc_load_barrier();
-			return reinterpret_cast<object*>(arenas[value.bits.address.arena]._gc_resolve(value));
+			return reinterpret_cast<object*>(the_gc.the_arena._gc_resolve(value));
 		}
 
 		gc_bits _gc_load_barrier() const noexcept {
 			gc_bits value = pointer.load();
 			bool nmt_changed = false;
-			if(value.bits.address.nmt != current_arena_nmt[value.bits.address.arena]) {
+			if(value.bits.address.nmt != the_gc.current_nmt) {
 				nmt_changed = true;
 			}
 			bool relocated = false;
-			if(arenas[value.bits.address.arena].is_protected(value)) {
+			if(the_gc.the_arena.is_protected(value)) {
 				relocated = true;
 			}
 			if(nmt_changed || relocated) {
@@ -522,7 +514,7 @@ namespace gc
 		gc_bits _gc_load_barrier_fix(gc_bits value, bool nmt_changed, bool relocated) const noexcept {
 			gc_bits old_value = value;
 			if(nmt_changed) {
-				value.bits.address.nmt = current_arena_nmt[value.bits.address.arena];
+				value.bits.address.nmt = the_gc.current_nmt;
 				//TODO queue for mark
 			}
 			if(relocated) {
@@ -532,7 +524,7 @@ namespace gc
 //				gc_bits new_location = arenas[value.bits.address.arena].get_new_location(value);
 //				value.bits.address = new_location.bits.address;
 				// forwarded address stored in the corpse of the old object
-				value.bits.address = reinterpret_cast<object*>(arenas[value.bits.address.arena]._gc_resolve(value))->count.load().bits.address;
+				value.bits.address = reinterpret_cast<object*>(the_gc.the_arena._gc_resolve(value))->count.load().bits.address;
 			}
 			pointer.compare_exchange_strong(old_value, value, std::memory_order_release);
 			return value;
@@ -833,13 +825,11 @@ namespace gc
 	struct thread_data : reference_registry
 	{
 		thread_data() : is_mutator_thread(true) {
-			++mutator_thread_count;
 			globals.register_mutator_thread(this);
 		}
 
 		~thread_data() {
 			if(is_mutator_thread) {
-				--mutator_thread_count;
 				globals.unregister_mutator_thread();
 			}
 		}
@@ -865,7 +855,6 @@ namespace gc
 		void set_as_gc_thread() {
 			globals.unregister_mutator_thread();
 			is_mutator_thread = false;
-			--mutator_thread_count;
 		}
 	
 	private:
@@ -880,21 +869,19 @@ namespace gc
 		std::recursive_mutex unsafe;
 
 		bool is_mutator_thread;
-
-		static std::atomic<size_t> mutator_thread_count;
 	};
 
 	template<typename T, typename... Args>
 	std::enable_if_t<!std::is_array<T>::value, handle<T> > inline gcnew(Args&&... args) {
 		thread_data::guard_unsafe g;
 		static_assert(std::is_base_of<object, T>::value, "T must be derived from object");
-		void* memory = arenas[gc_bits::young].allocate(sizeof(T));
+		void* memory = the_gc.the_arena.allocate(sizeof(T));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
-		gc_bits allocation_base = arenas[gc_bits::young]._gc_unresolve(memory);
+		gc_bits allocation_base = the_gc.the_arena._gc_unresolve(memory);
 		object* object = new(memory) T(std::forward<Args>(args)...);
-		object->_gc_set_block_unsafe(gc_bits::young, memory);
+		object->_gc_set_block_unsafe(memory);
 		return handle<T>(gc_bits::_gc_build_reference(object));
 	}
 
@@ -902,13 +889,13 @@ namespace gc
 	std::enable_if_t<std::is_array<T>::value, handle<T> > inline gcnew(size_t len) {
 		thread_data::guard_unsafe g;
 		using array_type = array<std::remove_extent_t<T> >;
-		void* memory = arenas[gc_bits::young].allocate(array_type::allocation_size(len));
+		void* memory = the_gc.the_arena.allocate(array_type::allocation_size(len));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
 		object* object = new(memory) array_type(len);
-		object->_gc_set_block_unsafe(gc_bits::young, memory);
+		object->_gc_set_block_unsafe(memory);
 		return handle<T>(gc_bits::_gc_build_reference(object));
 	}
 
@@ -917,13 +904,13 @@ namespace gc
 		thread_data::guard_unsafe g;
 		using array_type = array<std::remove_extent_t<T> >;
 		size_t size = init.size();
-		void* memory = arenas[gc_bits::young].allocate(array_type::allocation_size(size));
+		void* memory = the_gc.the_arena.allocate(array_type::allocation_size(size));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
 		object* object = new(memory) array_type(init);
-		object->_gc_set_block_unsafe(gc_bits::young, memory);
+		object->_gc_set_block_unsafe(memory);
 		return handle<T>(gc_bits::_gc_build_reference(object));
 	}
 

@@ -212,12 +212,12 @@ int main() {
 		}
 	}
 
-	//arena arena;
-	//void* zero = arena.allocate(0);
-	//void* one  = arena.allocate(1);
-	//void* alig = arena.allocate(arena.alignment);
-	//void* page = arena.allocate(arena.page_size);
-	//void* pages = arena.allocate(arena.page_size * 2);
+	arena arena;
+	void* zero = arena.allocate(0);
+	void* one  = arena.allocate(1);
+	void* alig = arena.allocate(arena.maximum_alignment);
+	void* page = arena.allocate(arena.page_size);
+	void* pages = arena.allocate(arena.page_size * 2);
 
 	//for(size_t i = 0; i < 16; ++i) {
 	//	std::cout << (*arena.page_usage)[i] << std::endl;
