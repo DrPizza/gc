@@ -6,7 +6,7 @@
 #include "gc/gc.hpp"
 #include "gc/gc-macros.hpp"
 
-#include "gc/ws-queue.hpp"
+#include "gc/detail/ws-queue.hpp"
 
 void* read_write;
 void* read_only;

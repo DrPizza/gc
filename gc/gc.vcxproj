@@ -85,11 +85,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="gc\circular-array.hpp" />
+    <ClInclude Include="gc\detail\circular-array.hpp" />
     <ClInclude Include="gc\gc-macros.hpp" />
     <ClInclude Include="gc\gc.hpp" />
     <ClInclude Include="gc\lock.hpp" />
-    <ClInclude Include="gc\ws-queue.hpp" />
+    <ClInclude Include="gc\detail\ws-queue.hpp" />
     <ClInclude Include="include\stdafx.h" />
     <ClInclude Include="include\targetver.h" />
   </ItemGroup>

@@ -123,10 +123,6 @@ namespace gc
 		return (v != 0) && (v & (v - 1)) == 0;
 	}
 
-	struct gc_metadata
-	{
-	};
-
 	struct object_base;
 
 	struct raw_reference;
@@ -228,7 +224,6 @@ namespace gc
 
 		void scan_roots();
 
-
 		using mark_queue = void;
 	};
 
@@ -268,8 +263,6 @@ namespace gc
 
 		virtual void _gc_trace(visitor*) = 0;
 
-		//virtual void* _gc_get_start() const = 0;
-
 	protected:
 		void _gc_set_block_unsafe(void* addr) noexcept {
 			gc_bits location = the_gc.the_arena._gc_unresolve(addr);
@@ -284,7 +277,6 @@ namespace gc
 		}
 
 	private:
-		gc_metadata* metadata;
 		gc_pointer count;
 
 		template<typename T, typename... Args>
@@ -340,10 +332,6 @@ namespace gc
 	{
 		virtual void _gc_trace(visitor*) override {
 		}
-
-		//virtual void* _gc_get_start() const override {
-		//	return const_cast<object*>(this);
-		//}
 	};
 
 	struct finalized_object : object
