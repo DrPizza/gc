@@ -25,15 +25,37 @@ namespace gc
 		if(section == NULL) {
 			throw std::bad_alloc();
 		}
-		base    = static_cast<unsigned char*>(::MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart));
-		rw_base = static_cast<unsigned char*>(::MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart));
+		do {
+			void* putative_base = ::VirtualAlloc(nullptr, size * 2, MEM_RESERVE, PAGE_READWRITE);
+			::VirtualFree(putative_base, 0, MEM_RELEASE);
+			base        = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, putative_base));
+			base_shadow = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, base + size  ));
+			if(base_shadow == nullptr) {
+				::UnmapViewOfFile(base);
+			}
+		}
+		while(base == nullptr || base_shadow == nullptr);
+
+		do {
+			void* putative_base = ::VirtualAlloc(nullptr, size * 2, MEM_RESERVE, PAGE_READWRITE);
+			::VirtualFree(putative_base, 0, MEM_RELEASE);
+			rw_base        = static_cast<byte*>(::MapViewOfFile  (section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart));
+			rw_base_shadow = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, rw_base + size));
+			if(rw_base_shadow == nullptr) {
+				::UnmapViewOfFile(rw_base);
+			}
+		}
+		while(rw_base == nullptr || rw_base_shadow == nullptr);
+
 		high_watermark.store(maximum_alignment - sizeof(allocation_header), std::memory_order_release);
 		low_watermark.store(0ui64, std::memory_order_release);
 	}
 
 	arena::~arena() {
 		::UnmapViewOfFile(rw_base);
+		::UnmapViewOfFile(rw_base_shadow);
 		::UnmapViewOfFile(base);
+		::UnmapViewOfFile(base_shadow);
 		::CloseHandle(section);
 	}
 
@@ -80,7 +102,7 @@ namespace gc
 			return;
 		}
 
-		unsigned char* region = static_cast<unsigned char*>(region_);
+		byte* region = static_cast<byte*>(region_);
 		if(region -    base >= size
 		&& region - rw_base >= size) {
 			throw std::runtime_error("attempt to deallocate memory belonging to another arena");

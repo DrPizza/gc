@@ -91,13 +91,19 @@ struct my_object : gc::object {
 };
 
 struct ambiguous_object : gc::object {
-	ambiguous_object(size_t parameter) {
+	ambiguous_object(size_t parameter) : value(parameter) {
 		std::cout << "parameter: " << parameter << std::endl;
+	}
+
+	void foo() const {
+		std::cout << value << std::endl;
 	}
 
 	virtual void _gc_trace(gc::visitor* visitor) override {
 		gc::object::_gc_trace(visitor);
 	}
+private:
+	size_t value;
 };
 
 struct left : gc::object
@@ -168,7 +174,7 @@ struct combined : left, right
 //	assert(std::get<json::Number>(Obj.at("Hello")) == 1.5);
 //	assert(std::get<json::Bool>(Obj.at("World")) == true);
 //	assert(std::get<json::Null>(Obj.at("Foo")) == nullptr);
-//	assert(std::get<json::String>(Obj.at("Foo")) == json::String{ "Majestic" });
+//	assert(std::get<json::String>(Obj.at("Bar")) == json::String{ "Majestic" });
 //	return 0;
 //}
 
@@ -249,10 +255,13 @@ int main() {
 	obj2->hello_world();
 	obj2->hello_world();
 	handle<ambiguous_object  > ao  = gcnew<ambiguous_object  >(3UL);
+	ao->foo();
 	handle<ambiguous_object[]> ar1 = gcnew<ambiguous_object[]>(4);
 	handle<ambiguous_object[]> ar2 = gcnew<ambiguous_object[]>({ gcnew<ambiguous_object>(5UL) });
+	ar2[0]->foo();
 	handle<size_t[]          > sa1 = gcnew<size_t[]>(1);
 	handle<size_t[]          > sa2 = gcnew<size_t[]>({ 1, 2, 3, 4});
+	std::cout << sa2[0] << std::endl;
 	return 0;
 
 	//segment_size.QuadPart = 1 << 30;

@@ -7,7 +7,9 @@
 #define _STL_EXTRA_DISABLED_WARNINGS 4061 4623 4365 4571 4625 4626 4710 4820 4987 5026 5027
 #endif
 
+#include <cstddef>
 #include <new>
+#include <cassert>
 #include <atomic>
 #include <array>
 #include <vector>
@@ -21,6 +23,8 @@
 #include <thread>
 #include <tuple>
 #include <map>
+#include <typeinfo>
+#include <memory>
 
 #include "lock.hpp"
 
@@ -37,6 +41,7 @@
 #pragma warning(disable: 4365) // warning C4365: '%s': conversion from '%s' to '%s', signed/unsigned mismatch
 #pragma warning(disable: 4464) // warning C4464: relative include path contains '..'
 #pragma warning(disable: 4574) // warning C4574: '%s' is defined to be '%s': did you mean to use '#if %s'?
+
 //
 //#include <tbb/concurrent_queue.h>
 //#include <tbb/enumerable_thread_specific.h>
@@ -44,6 +49,8 @@
 //#include <ppl.h>
 
 #pragma warning(pop)
+
+#pragma pointers_to_members(full_generality, virtual_inheritance)  
 
 namespace gc
 {
@@ -111,14 +118,13 @@ namespace gc
 
 	//static_assert(gc_pointer::is_always_lock_free(), "gc_pointer isn't lock-free");
 
-
 	static constexpr size_t get_max_ref_count() noexcept {
 		return 3;
 	}
 
 	template <class T>
 	static inline constexpr
-	std::enable_if_t<std::is_integral<T>::value && std::is_unsigned<T>::value, bool>
+	std::enable_if_t<std::is_integral_v<T> && std::is_unsigned_v<T>, bool>
 	is_power_of_two(T v) noexcept {
 		return (v != 0) && (v & (v - 1)) == 0;
 	}
@@ -126,6 +132,17 @@ namespace gc
 	struct object_base;
 
 	struct raw_reference;
+
+	template<typename T>
+	struct reference;
+
+	template<typename T>
+	struct handle;
+
+	template<typename T>
+	struct array;
+
+	struct finalized_object;
 
 	struct visitor
 	{
@@ -140,8 +157,10 @@ namespace gc
 		static constexpr size_t page_count = size / page_size;
 
 		void* section;
-		unsigned char* base;
-		unsigned char* rw_base;
+		byte* base;
+		byte* base_shadow;
+		byte* rw_base;
+		byte* rw_base_shadow;
 		std::atomic<size_t> low_watermark;
 		std::atomic<size_t> high_watermark;
 
@@ -185,12 +204,23 @@ namespace gc
 			if(location == nullptr) {
 				return gc_bits{ 0 };
 			}
-			const size_t offset = static_cast<size_t>(static_cast<unsigned const char*>(location) - base);
+			const size_t offset = static_cast<size_t>(static_cast<const byte*>(location) - base);
 			gc_bits value = { 0 };
 			value.bits.address.page_number = offset / page_size;
 			value.bits.address.page_offset = offset % page_size;
 			return value;
 		}
+	};
+
+	struct bit_table {
+		void set_bit(void* address) {
+			std::pair<size_t, uint8_t> position = get_bit_position(address);
+			bits[position.first].fetch_or(static_cast<uint8_t>(1ui8 << position.second), std::memory_order_release);
+		}
+
+		std::pair<size_t, uint8_t> get_bit_position(void* address);
+
+		std::array<std::atomic<uint8_t /*std::byte*/>, (arena::size / arena::maximum_alignment) / CHAR_BIT> bits;
 	};
 
 	struct collector {
@@ -218,6 +248,12 @@ namespace gc
 		std::atomic<size_t> scanned_colour;
 
 	private:
+		friend struct object_base;
+
+		void register_finalizable_object(void* addr) {
+			finalizable_objects.set_bit(addr);
+		}
+
 		using root_set = std::vector<object_base*>;
 
 		void flip();
@@ -225,20 +261,20 @@ namespace gc
 		void scan_roots();
 
 		using mark_queue = void;
+
+		bit_table finalizable_objects;
 	};
 
 	extern collector the_gc;
 
-	template<typename T>
-	struct reference;
-
-	template<typename T>
-	struct handle;
-
-	template<typename T>
-	struct array;
-
-	struct finalized_object;
+	inline std::pair<size_t, uint8_t> bit_table::get_bit_position(void* addr) {
+		assert(addr != nullptr);
+		const gc_bits offset = the_gc.the_arena._gc_unresolve(addr);
+		const size_t block_number = offset.raw.pointer / (arena::maximum_alignment / CHAR_BIT);
+		const size_t byte_number = block_number / CHAR_BIT;
+		const uint8_t bit_number = block_number % CHAR_BIT;
+		return { byte_number, bit_number };
+	}
 
 	struct object_base
 	{
@@ -264,11 +300,15 @@ namespace gc
 		virtual void _gc_trace(visitor*) = 0;
 
 	protected:
+		template<bool needs_finalization>
 		void _gc_set_block_unsafe(void* addr) noexcept {
 			gc_bits location = the_gc.the_arena._gc_unresolve(addr);
 			gc_bits current = count.load(std::memory_order_acquire);
-			current.bits.address = location.bits.address;
+			current.bits.header.raw_address = location.bits.header.raw_address;
 			count.store(current, std::memory_order_release);
+			if constexpr(needs_finalization) {
+				the_gc.register_finalizable_object(addr);
+			}
 		}
 
 		void* _gc_get_block() noexcept {
@@ -280,11 +320,11 @@ namespace gc
 		gc_pointer count;
 
 		template<typename T, typename... Args>
-		friend std::enable_if_t<!std::is_array<T>::value, handle<T> > gcnew(Args&&... args);
+		friend std::enable_if_t<!std::is_array_v<T>, handle<T> > gcnew(Args&&... args);
 		template<typename T>
-		friend std::enable_if_t< std::is_array<T>::value, handle<T> > gcnew(size_t size);
+		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(size_t size);
 		template<typename T>
-		friend std::enable_if_t< std::is_array<T>::value, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
+		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
 
 		friend struct raw_reference;
 		friend struct finalized_object;
@@ -355,17 +395,17 @@ namespace gc
 
 	template<typename T>
 	struct
-	alignas(std::conditional_t<std::is_base_of<object, T>::value, reference<T>, T>)
-	alignas(std::conditional_t<std::is_base_of<finalized_object, T>::value, finalized_object, object>)
+	alignas(std::conditional_t<std::is_base_of_v<object, T>, reference<T>, T>)
+	alignas(std::conditional_t<std::is_base_of_v<finalized_object, T>, finalized_object, object>)
 	alignas(size_t)
-	array : std::conditional_t<std::is_base_of<finalized_object, T>::value, finalized_object, object>
+	array : std::conditional_t<std::is_base_of_v<finalized_object, T>, finalized_object, object>
 	{
 		template<typename T>
-		friend std::enable_if_t<std::is_array<T>::value, handle<T> > gcnew(size_t size);
+		friend std::enable_if_t<std::is_array_v<T>, handle<T> > gcnew(size_t size);
 		template<typename T>
-		friend std::enable_if_t<std::is_array<T>::value, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
+		friend std::enable_if_t<std::is_array_v<T>, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
 
-		using element_type = std::conditional_t<std::is_base_of<object, T>::value, reference<T>, T>;
+		using element_type = std::conditional_t<std::is_base_of_v<object, T>, reference<T>, T>;
 
 		array() = delete;
 		array(const array&) = delete;
@@ -406,7 +446,7 @@ namespace gc
 		}
 
 		template<typename U = T>
-		std::enable_if_t<std::is_base_of<object, U>::value> _gc_trace_dispatch(visitor* visitor) {
+		std::enable_if_t<std::is_base_of_v<object, U>> _gc_trace_dispatch(visitor* visitor) {
 			element_type* es = elements();
 			for(size_t i = 0; i < len; ++i) {
 				if(es[i]) {
@@ -417,7 +457,7 @@ namespace gc
 		}
 
 		template<typename U = T>
-		std::enable_if_t<!std::is_base_of<object, U>::value> _gc_trace_dispatch(visitor* visitor) {
+		std::enable_if_t<!std::is_base_of_v<object, U>> _gc_trace_dispatch(visitor* visitor) {
 			return object::_gc_trace(visitor);
 		}
 
@@ -448,9 +488,10 @@ namespace gc
 		}
 
 		raw_reference(const raw_reference& rhs) noexcept {
-			if(object* obj = rhs._gc_resolve()) {
+			if(object_base* obj = rhs._gc_resolve()) {
 				obj->_gc_add_ref();
 			}
+			_gc_write_barrier();
 			pointer.store(rhs.pointer.load());
 		}
 
@@ -469,21 +510,26 @@ namespace gc
 		}
 
 		virtual ~raw_reference() noexcept {
-			if(object* obj = _gc_resolve()) {
+			if(object_base* obj = _gc_resolve()) {
 				obj->_gc_del_ref();
 			}
 			pointer.store(gc_bits{ 0 }, std::memory_order_release);
 		}
 
-		object* _gc_resolve() const noexcept {
+		object_base* _gc_resolve() const noexcept {
 			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
 				return nullptr;
 			}
-			gc_bits value = _gc_load_barrier();
-			return reinterpret_cast<object*>(the_gc.the_arena._gc_resolve(value));
+			gc_bits value = _gc_read_barrier();
+			return reinterpret_cast<object_base*>(the_gc.the_arena._gc_resolve(value));
 		}
 
-		gc_bits _gc_load_barrier() const noexcept {
+		void _gc_write_barrier() const noexcept {
+			// awkward. if my retaining object is oldgen, and the new object is newgen, I need to treat that specially.
+			// but I don't know what my retaining object is.
+		}
+
+		gc_bits _gc_read_barrier() const noexcept {
 			gc_bits value = pointer.load();
 			bool nmt_changed = false;
 			if(value.bits.address.nmt != the_gc.current_nmt) {
@@ -503,7 +549,7 @@ namespace gc
 			gc_bits old_value = value;
 			if(nmt_changed) {
 				value.bits.address.nmt = the_gc.current_nmt;
-				//TODO queue for mark
+				the_gc.queue_object(reinterpret_cast<object*>(the_gc.the_arena._gc_resolve(value)));
 			}
 			if(relocated) {
 				if(value.bits.header.relocate != gc_bits::moved) {
@@ -562,9 +608,9 @@ namespace gc
 	template<typename T>
 	struct reference : raw_reference
 	{
-		static_assert(std::is_base_of<object, T>::value || std::is_array<T>::value, "T must be derived from object");
+		static_assert(std::is_base_of_v<object, T> || std::is_array_v<T>, "T must be derived from object");
 
-		using referenced_type = std::conditional_t<std::is_array<T>::value, array<T>, T>;
+		using referenced_type = std::conditional_t<std::is_array_v<T>, array<std::remove_extent_t<T> >, T>;
 
 		using my_type = reference<T>;
 		using base_type = raw_reference;
@@ -603,10 +649,16 @@ namespace gc
 			return _gc_resolve();
 		}
 
+		template<typename U = T>
+		std::enable_if_t<std::is_array_v<U>, typename array<std::remove_extent_t<U>>::element_type>
+		operator[](size_t offset) const noexcept {
+			return _gc_resolve()->operator[](offset);
+		}
+
 	protected:
 		referenced_type* _gc_resolve() const noexcept {
-			return static_cast<referenced_type*>(raw_reference::_gc_resolve()); // this downcast should always be safe
-			//return dynamic_cast<referenced_type*>(raw_reference::_gc_resolve());
+			assert(dynamic_cast<referenced_type*>(raw_reference::_gc_resolve()) != nullptr);
+			return dynamic_cast<referenced_type*>(raw_reference::_gc_resolve());
 		}
 
 	private:
@@ -619,11 +671,11 @@ namespace gc
 		friend struct member;
 
 		template<typename T, typename... Args>
-		friend std::enable_if_t<!std::is_array<T>::value, handle<T> > gcnew(Args&&... args);
+		friend std::enable_if_t<!std::is_array_v<T>, handle<T> > gcnew(Args&&... args);
 		template<typename T>
-		friend std::enable_if_t< std::is_array<T>::value, handle<T> > gcnew(size_t size);
+		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(size_t size);
 		template<typename T>
-		friend std::enable_if_t< std::is_array<T>::value, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
+		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
 		template<typename T>
 		friend struct array;
 
@@ -860,21 +912,21 @@ namespace gc
 	};
 
 	template<typename T, typename... Args>
-	std::enable_if_t<!std::is_array<T>::value, handle<T> > inline gcnew(Args&&... args) {
+	std::enable_if_t<!std::is_array_v<T>, handle<T> > inline gcnew(Args&&... args) {
 		thread_data::guard_unsafe g;
-		static_assert(std::is_base_of<object, T>::value, "T must be derived from object");
+		static_assert(std::is_base_of_v<object, T>, "T must be derived from object");
 		void* memory = the_gc.the_arena.allocate(sizeof(T));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 		gc_bits allocation_base = the_gc.the_arena._gc_unresolve(memory);
-		object* object = new(memory) T(std::forward<Args>(args)...);
-		object->_gc_set_block_unsafe(memory);
-		return handle<T>(gc_bits::_gc_build_reference(object));
+		T* object = new(memory) T(std::forward<Args>(args)...);
+		object->_gc_set_block_unsafe<std::is_base_of_v<finalized_object, T> >(memory);
+		return handle<T>(gc_bits::_gc_build_reference(dynamic_cast<object_base*>(object)));
 	}
 
 	template<typename T>
-	std::enable_if_t<std::is_array<T>::value, handle<T> > inline gcnew(size_t len) {
+	std::enable_if_t<std::is_array_v<T>, handle<T> > inline gcnew(size_t len) {
 		thread_data::guard_unsafe g;
 		using array_type = array<std::remove_extent_t<T> >;
 		void* memory = the_gc.the_arena.allocate(array_type::allocation_size(len));
@@ -882,13 +934,13 @@ namespace gc
 			throw std::bad_alloc();
 		}
 
-		object* object = new(memory) array_type(len);
-		object->_gc_set_block_unsafe(memory);
-		return handle<T>(gc_bits::_gc_build_reference(object));
+		array_type* object = new(memory) array_type(len);
+		object->_gc_set_block_unsafe<std::is_base_of_v<finalized_object, array_type> >(memory);
+		return handle<T>(gc_bits::_gc_build_reference(dynamic_cast<object_base*>(object)));
 	}
 
 	template<typename T>
-	std::enable_if_t<std::is_array<T>::value, handle<T> > inline gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init) {
+	std::enable_if_t<std::is_array_v<T>, handle<T> > inline gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init) {
 		thread_data::guard_unsafe g;
 		using array_type = array<std::remove_extent_t<T> >;
 		size_t size = init.size();
@@ -897,9 +949,9 @@ namespace gc
 			throw std::bad_alloc();
 		}
 
-		object* object = new(memory) array_type(init);
-		object->_gc_set_block_unsafe(memory);
-		return handle<T>(gc_bits::_gc_build_reference(object));
+		array_type* object = new(memory) array_type(init);
+		object->_gc_set_block_unsafe<std::is_base_of_v<finalized_object, array_type> >(memory);
+		return handle<T>(gc_bits::_gc_build_reference(dynamic_cast<object_base*>(object)));
 	}
 
 }
