@@ -21,6 +21,7 @@
 #define CONCATENATE1(arg1, arg2)  CONCATENATE2(arg1, arg2)
 #define CONCATENATE2(arg1, arg2)  arg1##arg2
 
+#define FOR_EACH_0(WHAT, X)
 #define FOR_EACH_1(WHAT, X)       WHAT(X)
 #define FOR_EACH_2(WHAT, X, ...)  WHAT(X) FOR_EACH_1 (WHAT, __VA_ARGS__)
 #define FOR_EACH_3(WHAT, X, ...)  WHAT(X) FOR_EACH_2 (WHAT, __VA_ARGS__)
@@ -51,7 +52,7 @@
 	VISIT_GC_BASES __VA_ARGS__
 
 #define VISIT_GC_MEMBER(PROTECTION, TYPE, MEMBER) \
-	visitor__->mark(MEMBER);
+	visitor__->trace(MEMBER);
 
 #define VISIT_GC_MEMBER_IND(...) \
 	VISIT_GC_MEMBER __VA_ARGS__
@@ -77,7 +78,7 @@
 #define DEFINE_GC_MEMBERS(BASES, MEMBERS) \
 	DECLARE_GC_MEMBERS_IND(MEMBERS) \
 	public: \
-	virtual void _gc_trace(gc::visitor* visitor__) override { \
-		VISIT_GC_BASES_IND(BASES) \
+	virtual void _gc_trace(gc::visitor* visitor__) const override { \
 		VISIT_GC_MEMBERS_IND(MEMBERS) \
+		VISIT_GC_BASES_IND(BASES) \
 	}

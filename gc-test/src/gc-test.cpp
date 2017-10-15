@@ -85,7 +85,7 @@ struct my_object : gc::object {
 		std::cout << "Hello, World!" << std::endl;
 	}
 
-	virtual void _gc_trace(gc::visitor* visitor) override {
+	virtual void _gc_trace(gc::visitor* visitor) const override {
 		gc::object::_gc_trace(visitor);
 	}
 };
@@ -96,19 +96,21 @@ struct ambiguous_object : gc::object {
 	}
 
 	void foo() const {
-		std::cout << value << std::endl;
+		std::cout << "foo: " << value << std::endl;
 	}
 
-	virtual void _gc_trace(gc::visitor* visitor) override {
+	virtual void _gc_trace(gc::visitor* visitor) const override {
+		std::cout << __FUNCSIG__ << std::endl;
 		gc::object::_gc_trace(visitor);
 	}
+
 private:
 	size_t value;
 };
 
 struct left : gc::object
 {
-	virtual void _gc_trace(gc::visitor* visitor) override {
+	virtual void _gc_trace(gc::visitor* visitor) const override {
 		std::cout << __FUNCSIG__ << std::endl;
 		gc::object::_gc_trace(visitor);
 	}
@@ -116,7 +118,7 @@ struct left : gc::object
 
 struct right : gc::object
 {
-	virtual void _gc_trace(gc::visitor* visitor) override {
+	virtual void _gc_trace(gc::visitor* visitor) const override {
 		std::cout << __FUNCSIG__ << std::endl;
 		gc::object::_gc_trace(visitor);
 	}
@@ -130,16 +132,62 @@ struct right : gc::object
 //		right::_gc_trace(visitor);
 //	}
 //};
-//
 
 struct combined : left, right
 {
+	combined() : ao1(gc::gcnew<ambiguous_object>(10u)),
+	             ao2(gc::gcnew<ambiguous_object>(11u))
+	{
+		ao1->foo();
+		ao2->foo();
+	}
+
 	DEFINE_GC_MEMBERS(
 		(left, right),
 		(
 			(public, ambiguous_object, ao1),
 			(public, ambiguous_object, ao2)
 		)
+	)
+};
+
+struct B : gc::object {
+	DEFINE_GC_MEMBERS(
+		(gc::object),
+		()
+	)
+
+	virtual void foo() {
+		std::cout << this << " " << typeid(this).name() << std::endl;
+	}
+};
+
+struct D1 : B {
+	DEFINE_GC_MEMBERS(
+		(B),
+		()
+	)
+
+	virtual void foo() {
+		std::cout << this << " " << typeid(this).name() << std::endl;
+	}
+};
+
+struct D2 : B {
+	DEFINE_GC_MEMBERS(
+		(B),
+		()
+	)
+
+	virtual void foo() {
+		std::cout << this << " " << typeid(this).name() << std::endl;
+	}
+};
+
+struct D3 : D1, D2 {
+	DEFINE_GC_MEMBERS(
+		(D1, D2),
+		()
 	)
 };
 
@@ -218,50 +266,73 @@ int main() {
 		}
 	}
 
-	arena arena;
-	void* zero = arena.allocate(0);
-	void* one  = arena.allocate(1);
-	void* alig = arena.allocate(arena.maximum_alignment);
-	void* page = arena.allocate(arena.page_size);
-	void* pages = arena.allocate(arena.page_size * 2);
+	{
+		//arena arena;
+		//void* zero = arena.allocate(0);
+		//void* one = arena.allocate(1);
+		//void* alig = arena.allocate(arena.maximum_alignment);
+		//void* page = arena.allocate(arena.page_size);
+		//void* pages = arena.allocate(arena.page_size * 2);
+		//arena.deallocate(pages);
+		//arena.deallocate(page);
+		//arena.deallocate(alig);
+		//arena.deallocate(one);
+		//arena.deallocate(zero);
+	}
 
-	//for(size_t i = 0; i < 16; ++i) {
-	//	std::cout << (*arena.page_usage)[i] << std::endl;
-	//}
-	//std::cout << "attempting decommit" << std::endl;
-	//BOOL result = ::VirtualFree(page, 4096, MEM_DECOMMIT);
-	//std::cout << "result was " << result << " " << ::GetLastError() << std::endl;
-	//*(int*)page = 0;
-	//arena.deallocate(page);
+	{
+		handle<my_object> obj = gcnew<my_object>();
+		obj->hello_world();
+		obj->hello_world();
+		handle<my_object> obj2(obj);
+		obj2->hello_world();
+		obj2->hello_world();
+		handle<ambiguous_object  > ao = gcnew<ambiguous_object  >(3UL);
+		ao->foo();
+		handle<ambiguous_object[]> ar1 = gcnew<ambiguous_object[]>(4);
+		handle<ambiguous_object[]> ar2 = gcnew<ambiguous_object[]>({ gcnew<ambiguous_object>(5UL) });
+		ar2[0]->foo();
+	}
 
-	//for(size_t i = 0; i < 16; ++i) {
-	//	std::cout << (*arena.page_usage)[i] << std::endl;
-	//}
+	{
+		handle<size_t[]          > sa1 = gcnew<size_t[]>(1);
+		handle<size_t[]          > sa2 = gcnew<size_t[]>({ 1, 2, 3, 4 });
+		std::cout << sa2[0] << std::endl;
+	}
 
-	//std::cout << "****" << std::endl;
+	{
+		handle<combined> c = gcnew<combined>();
+		handle<left> l1 = c;
+		handle<left> l2(c);
+		handle<left> l3; l3 = c;
 
-	//std::cout << get_max_ref_count() << std::endl;
+		handle<combined> c2 = gc_cast<combined>(l1);
+		handle<ambiguous_object> ao = gcnew<ambiguous_object>(3UL);
+		handle<combined> c3 = gc_cast<combined>(ao);
 
-	//my_object* prohibited = new my_object();
+		marker m;
+		m.trace(c);
+	}
 
-	visitor vis;
-	combined c;
-	c._gc_trace(&vis);
+	{
+		handle<D3> d3 = gcnew<D3>();
+		handle<D1> d1 = d3;
+		handle<D2> d2 = d3;
 
-	handle<my_object> obj = gcnew<my_object>();
-	obj->hello_world();
-	obj->hello_world();
-	handle<my_object> obj2(obj);
-	obj2->hello_world();
-	obj2->hello_world();
-	handle<ambiguous_object  > ao  = gcnew<ambiguous_object  >(3UL);
-	ao->foo();
-	handle<ambiguous_object[]> ar1 = gcnew<ambiguous_object[]>(4);
-	handle<ambiguous_object[]> ar2 = gcnew<ambiguous_object[]>({ gcnew<ambiguous_object>(5UL) });
-	ar2[0]->foo();
-	handle<size_t[]          > sa1 = gcnew<size_t[]>(1);
-	handle<size_t[]          > sa2 = gcnew<size_t[]>({ 1, 2, 3, 4});
-	std::cout << sa2[0] << std::endl;
+		handle<B> b1 = d1; // ok
+		handle<B> b2 = d2; // ok
+
+		handle<B> b3 = gc_cast<B>(gc_cast<D1>(d3));
+
+		std::cout << !!b1 << " " << !!b2 << std::endl;
+
+		d1->foo();
+		d2->foo();
+
+		b1->foo();
+		b2->foo();
+	}
+
 	return 0;
 
 	//segment_size.QuadPart = 1 << 30;

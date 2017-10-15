@@ -4,21 +4,24 @@
 
 namespace gc
 {
+	const gc_bits gc_bits::zero = { 0 };
+
 	global_data globals;
 
 	thread_local thread_data this_gc_thread;
 
 	collector the_gc;
 
-	gc_bits gc_bits::_gc_build_reference(void* memory) {
+	gc_bits gc_bits::_gc_build_reference(void* memory, ptrdiff_t base_offset) {
 		gc_bits unresolved = the_gc.the_arena._gc_unresolve(memory);
 		unresolved.bits.address.generation = gc_bits::young;
 		unresolved.bits.address.nmt = the_gc.current_nmt.load(std::memory_order_acquire);
+		unresolved.bits.address.base_offset = base_offset;
 		unresolved.bits.header.colour = gc_bits::grey;
 		return unresolved;
 	}
 
-	arena::arena() {
+	arena::arena(size_t size_) : size(size_), page_count(size / page_size) {
 		ULARGE_INTEGER section_size = { 0 };
 		section_size.QuadPart = size;
 		section = ::CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, section_size.HighPart, section_size.LowPart, nullptr);
@@ -48,7 +51,7 @@ namespace gc
 		while(rw_base == nullptr || rw_base_shadow == nullptr);
 
 		high_watermark.store(maximum_alignment - sizeof(allocation_header), std::memory_order_release);
-		low_watermark.store(0ui64, std::memory_order_release);
+		low_watermark .store(maximum_alignment - sizeof(allocation_header), std::memory_order_release);
 	}
 
 	arena::~arena() {
@@ -70,7 +73,6 @@ namespace gc
 		const size_t allocated_size = requested_size + padding_size;
 
 		size_t base_offset = 0;
-		allocation_header* header = nullptr;
 		for(;;) {
 			size_t h = high_watermark.load(std::memory_order_acquire);
 			size_t l = low_watermark.load(std::memory_order_acquire);
@@ -83,18 +85,16 @@ namespace gc
 
 			size_t old_offset = h;
 			size_t new_offset = old_offset + allocated_size;
-			if(!high_watermark.compare_exchange_strong(old_offset, new_offset, std::memory_order_release)) {
-				continue;
-			}
-
-			base_offset = new_offset;
-			header = reinterpret_cast<allocation_header*>(base + base_offset);
-			size_t old_header_size = 0ui64;
-			if(header->allocated_size.compare_exchange_strong(old_header_size, allocated_size, std::memory_order_release)) {
+			if(high_watermark.compare_exchange_strong(old_offset, new_offset, std::memory_order_release)) {
+				base_offset = old_offset;
 				break;
 			}
 		}
-		return base + base_offset + sizeof(allocation_header);
+		allocation_header* header = reinterpret_cast<allocation_header*>(base + base_offset);
+		header->allocated_size.store(allocated_size, std::memory_order_release);
+		void* allocation = base + base_offset + sizeof(allocation_header);
+		std::memset(allocation, 0, allocated_size - sizeof(allocation_header));
+		return allocation;
 	}
 
 	void arena::deallocate(void* region_) {
@@ -103,21 +103,21 @@ namespace gc
 		}
 
 		byte* region = static_cast<byte*>(region_);
-		if(region -    base >= size
-		&& region - rw_base >= size) {
+		if(region -    base >= static_cast<ptrdiff_t>(size)
+		&& region - rw_base >= static_cast<ptrdiff_t>(size)) {
 			throw std::runtime_error("attempt to deallocate memory belonging to another arena");
 		}
 
-		static const size_t padded_header_size     = (sizeof(allocation_header) + (maximum_alignment - 1)) & ~(maximum_alignment - 1);
-
-		region -= padded_header_size;
-		if(region <    base
-		&& region < rw_base) {
-			throw std::runtime_error("attempt to deallocate memory belonging to another arena");
-		}
-
-		allocation_header* header = reinterpret_cast<allocation_header*>(region);
+		allocation_header* header = reinterpret_cast<allocation_header*>(region - sizeof(allocation_header));
+		size_t block_size = header->allocated_size.load(std::memory_order_acquire);
+#ifdef _DEBUG
+		std::memset(region, 0xff, block_size - sizeof(allocation_header));
+#endif
 		header->allocated_size.store(0ui64, std::memory_order_release);
+
+		size_t block_offset = static_cast<size_t>(region - base);
+		// if this just happens to be the lowest block, bump the low watermark optimistically
+		low_watermark.compare_exchange_strong(block_offset, block_offset + block_size, std::memory_order_release);
 	}
 
 	bool arena::is_protected(const gc_bits location) const {
@@ -156,4 +156,47 @@ namespace gc
 		condemned_colour.fetch_xor(1ui64, std::memory_order_release);
 		scanned_colour.fetch_xor(1ui64, std::memory_order_release);
 	}
+
+	void marker::trace(const raw_reference& ref) {
+		// mark the reference as marked through
+		for(;;) {
+			gc_bits old_value = ref.pointer.load(std::memory_order_acquire);
+			gc_bits new_value = old_value;
+			new_value.bits.address.nmt = the_gc.current_nmt;
+			if(ref.pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
+				break;
+			}
+		}
+
+		object_base* obj = ref._gc_resolve_base();
+		if(!obj) {
+			return;
+		}
+
+		// grey the object
+		for(;;) {
+			gc_bits old_value = obj->count.load(std::memory_order_acquire);
+			gc_bits new_value = old_value;
+			new_value.bits.header.colour = gc_bits::grey;
+			if(obj->count.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
+				break;
+			}
+		}
+		// trace the object
+		obj->_gc_trace(this);
+		// black the object
+		for(;;) {
+			gc_bits old_value = obj->count.load(std::memory_order_acquire);
+			gc_bits new_value = old_value;
+			new_value.bits.header.colour = the_gc.scanned_colour;
+			if(obj->count.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
+				break;
+			}
+		}
+	}
+
+	void nuller::trace(const raw_reference& ref) {
+		const_cast<raw_reference&>(ref).clear();
+	}
+
 }
