@@ -56,6 +56,7 @@
 
 namespace gc
 {
+	struct object_base;
 
 	union gc_bits
 	{
