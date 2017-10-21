@@ -141,7 +141,13 @@ namespace gc
 	}
 
 	void collector::mark() {
+		reachables.reset();
+
 		scan_roots();
+
+		marker m(this);
+
+		//m.trace()
 	}
 	
 	void collector::scan_roots() {
@@ -157,49 +163,37 @@ namespace gc
 		scanned_colour.fetch_xor(1ui64, std::memory_order_release);
 	}
 
-	void marker::trace(const raw_reference& ref) {
+	void marker::trace(const raw_reference* ref) {
 		// mark the reference as marked through
 		for(;;) {
-			gc_bits old_value = ref.pointer.load(std::memory_order_acquire);
+			gc_bits old_value = ref->pointer.load(std::memory_order_acquire);
 			gc_bits new_value = old_value;
 			new_value.address.seen_by_marker = the_gc.current_marker_phase;
-			if(ref.pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
+			if(ref->pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
 				break;
 			}
 		}
 
-		object_base* obj = ref._gc_resolve_base();
+		object_base* obj = ref->_gc_resolve_base();
 		if(!obj) {
 			return;
 		}
+		trace(obj);
+	}
+
+	void marker::trace(const object_base* obj) {
 		if(obj->count.load(std::memory_order_relaxed).header.destructed) {
 			return;
 		}
-
-		// grey the object
-		for(;;) {
-			gc_bits old_value = obj->count.load(std::memory_order_acquire);
-			gc_bits new_value = old_value;
-			new_value.header.colour = gc_bits::grey;
-			if(obj->count.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
-				break;
-			}
-		}
-		// trace the object
-		obj->_gc_trace(this);
-		// black the object
-		for(;;) {
-			gc_bits old_value = obj->count.load(std::memory_order_acquire);
-			gc_bits new_value = old_value;
-			new_value.header.colour = the_gc.scanned_colour;
-			if(obj->count.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
-				break;
-			}
+		void* base_address = obj->_gc_get_block();
+		if(!the_gc.is_marked_reachable(base_address)) {
+			the_gc.mark_reachable(base_address);
+			obj->_gc_trace(this);
 		}
 	}
 
-	void nuller::trace(const raw_reference& ref) {
-		const_cast<raw_reference&>(ref).clear();
+	void nuller::trace(const raw_reference* ref) {
+		const_cast<raw_reference*>(ref)->clear();
 	}
 
 }

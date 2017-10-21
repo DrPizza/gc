@@ -61,6 +61,9 @@ namespace gc
 	union gc_bits
 	{
 		size_t value;
+		// used by raw_reference to point to an object_base on the gc heap
+		// used by reference<T>  to include the offset to the T object on the gc heap
+		// used by object_base to record either the start of the containing memory block, or the relocated object
 		struct
 		{
 			size_t    page_offset    : 12; // 4K pages => 12 bit page offset
@@ -69,6 +72,7 @@ namespace gc
 			size_t    seen_by_marker : 2;
 			ptrdiff_t typed_offset   : 12; // where to find the start of the typed object, relative to the address of the object_base, in void*s
 		} address;
+		// used by object_base to track ref counts, mark status, whether the destructor has been called
 		struct
 		{
 			size_t raw_address       : 56;
@@ -161,17 +165,13 @@ namespace gc
 
 	struct visitor
 	{
-		virtual void trace(const raw_reference& ref) = 0;
-	};
+		virtual void trace(const raw_reference* ref) = 0;
+		virtual void trace(const object_base*) {
+		}
 
-	struct marker : visitor
-	{
-		virtual void trace(const raw_reference& ref);
-	};
-
-	struct nuller : visitor
-	{
-		virtual void trace(const raw_reference& ref);
+		void trace(const raw_reference& ref) {
+			trace(&ref);
+		}
 	};
 
 	struct arena
@@ -248,9 +248,10 @@ namespace gc
 
 	struct bit_table
 	{
-		bit_table(size_t size) : bits(new std::atomic<uint8_t>[(size / arena::maximum_alignment) / CHAR_BIT]) {
+		bit_table(size_t size_) : size(size_), bits(new std::atomic<uint8_t>[(size / arena::maximum_alignment) / CHAR_BIT]) {
 
 		}
+
 		void set_bit(void* address) {
 			std::pair<size_t, uint8_t> position = get_bit_position(address);
 			bits[position.first].fetch_or ( static_cast<uint8_t>(1ui8 << position.second), std::memory_order_release);
@@ -261,8 +262,20 @@ namespace gc
 			bits[position.first].fetch_and(~static_cast<uint8_t>(1ui8 << position.second), std::memory_order_release);
 		}
 
+		bool query_bit(void* address) {
+			std::pair<size_t, uint8_t> position = get_bit_position(address);
+			return 1ui8 == ((bits[position.first].load(std::memory_order_relaxed) >> position.second) & 1ui8);
+		}
+
+		void reset() {
+			for(size_t i = 0; i < size; ++i) {
+				bits[i].store(0ui8, std::memory_order_relaxed);
+			}
+		}
+
 		std::pair<size_t, uint8_t> get_bit_position(void* address);
 
+		size_t size;
 		std::unique_ptr<std::atomic<uint8_t /*std::byte*/>[]> bits;
 	};
 
@@ -295,8 +308,18 @@ namespace gc
 		std::atomic<size_t> condemned_colour;
 		std::atomic<size_t> scanned_colour;
 
+	protected:
+		bool is_marked_reachable(void* address) {
+			return reachables.query_bit(address);
+		}
+
+		void mark_reachable(void* address) {
+			reachables.set_bit(address);
+		}
+
 	private:
 		friend struct object_base;
+		friend struct marker;
 
 		using root_set = std::vector<object_base*>;
 
@@ -321,6 +344,23 @@ namespace gc
 		const uint8_t bit_number = block_number % CHAR_BIT;
 		return { byte_number, bit_number };
 	}
+
+	struct marker : visitor {
+		marker(collector* c) : coll(c) {
+		}
+
+		virtual void trace(const raw_reference* ref) override;
+		virtual void trace(const object_base* obj) override;
+		using visitor::trace;
+
+	private:
+		collector* coll;
+	};
+
+	struct nuller : visitor {
+		virtual void trace(const raw_reference* ref) override;
+		using visitor::trace;
+	};
 
 	struct object_base
 	{
@@ -482,7 +522,15 @@ namespace gc
 		}
 
 		virtual void _gc_trace(visitor* v) const override {
-			return _gc_trace_dispatch(v);
+			if constexpr(std::is_base_of_v<object, T>) {
+				const element_type* es = elements();
+				for(size_t i = 0; i < len; ++i) {
+					if(es[i]) {
+						v->trace(es[i]);
+					}
+				}
+			}
+			return object::_gc_trace(v);
 		}
 
 	private:
@@ -496,22 +544,6 @@ namespace gc
 
 		const element_type* elements() const noexcept {
 			return reinterpret_cast<const element_type*>(this + 1);
-		}
-
-		template<typename U = T>
-		std::enable_if_t<std::is_base_of_v<object, U>> _gc_trace_dispatch(visitor* visitor) const {
-			const element_type* es = elements();
-			for(size_t i = 0; i < len; ++i) {
-				if(es[i]) {
-					visitor->trace(es[i]);
-				}
-			}
-			return object::_gc_trace(visitor);
-		}
-
-		template<typename U = T>
-		std::enable_if_t<!std::is_base_of_v<object, U>> _gc_trace_dispatch(visitor* visitor) const {
-			return object::_gc_trace(visitor);
 		}
 
 		size_t len;
@@ -652,6 +684,8 @@ namespace gc
 
 	struct reference_registry
 	{
+		using registration = std::tuple<raw_reference*, object_base*>;
+
 		void register_reference(raw_reference* ref, object_base* obj) {
 			if(ref != nullptr) {
 				std::lock_guard<std::mutex> guard(references_mtx);
@@ -666,15 +700,17 @@ namespace gc
 			}
 		}
 
-		std::vector<object_base*> get_snapshot() {
+		virtual std::vector<registration> get_snapshot() {
 			std::lock_guard<std::mutex> guard(references_mtx);
-			std::vector<object_base*> snapshot;
-			std::transform(references.begin(), references.end(), std::back_inserter(snapshot), [](auto p) { return p.second; });
+			std::vector<registration> snapshot;
+			std::transform(references.begin(), references.end(), std::back_inserter(snapshot), [](auto p) { return std::make_tuple(p.first, p.second); });
 			return snapshot;
 		}
 
+		virtual ~reference_registry() {
+		}
+
 	private:
-		using registration = std::tuple<raw_reference*, object_base*>;
 
 		std::mutex references_mtx;
 		std::map<raw_reference*, object_base*> references;
@@ -730,9 +766,13 @@ namespace gc
 			}
 		};
 
-		std::vector<object_base*> get_snapshot() {
+		virtual std::vector<registration> get_snapshot() {
 			std::lock_guard<std::recursive_mutex> guard(unsafe);
-			return reference_registry::get_snapshot();
+			std::vector<registration> snapshot = reference_registry::get_snapshot();
+			for(registration& reg : snapshot) {
+				std::get<0>(reg) = nullptr;
+			}
+			return snapshot;
 		}
 
 		void set_as_gc_thread() {
@@ -799,7 +839,7 @@ namespace gc
 		}
 
 		template<typename U = T>
-		std::enable_if_t<std::is_array_v<U>, typename array<std::remove_extent_t<U>>::element_type>
+		std::enable_if_t<std::is_array_v<U>, typename array<std::remove_extent_t<U>>::element_type&>
 		operator[](size_t offset) const noexcept {
 			return _gc_resolve()->operator[](offset);
 		}

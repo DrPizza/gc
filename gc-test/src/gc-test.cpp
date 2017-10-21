@@ -326,7 +326,7 @@ int main() {
 		handle<ambiguous_object> ao = gcnew<ambiguous_object>(3UL);
 		handle<combined> c3 = gc_cast<combined>(ao);
 
-		marker m;
+		marker m(&the_gc);
 		m.trace(c);
 	}
 
