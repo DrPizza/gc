@@ -26,6 +26,7 @@
 #include <typeinfo>
 #include <memory>
 #include <unordered_map>
+#include <stdexcept>
 
 #include "lock.hpp"
 
@@ -59,30 +60,27 @@ namespace gc
 	union gc_bits
 	{
 		size_t value;
-		union
+		struct
 		{
-			struct
-			{
-				size_t    page_offset : 12; // 4K pages => 12 bit page offset
-				size_t    page_number : 28;
-				size_t    generation  : 2;
-				size_t    nmt         : 2;
-				ptrdiff_t base_offset : 12; // where to find the start of the object_base, relative to this address, in void*s
-			} address;
-			struct
-			{
-				size_t raw_address       : 56;
-				size_t colour            : 2;
-				size_t relocate          : 2;  // 0 = resident, 1 = moving, 2 = moved
-				size_t reference_count   : 3;  // 0-6 = rced, 7 = gced
-				size_t unused            : 1;
-			} header;
-			struct
-			{
-				size_t raw_address : 56;
-				size_t raw_header  : 8;
-			} layout;
-		} bits;
+			size_t    page_offset    : 12; // 4K pages => 12 bit page offset
+			size_t    page_number    : 28;
+			size_t    generation     : 2;
+			size_t    seen_by_marker : 2;
+			ptrdiff_t typed_offset   : 12; // where to find the start of the typed object, relative to the address of the object_base, in void*s
+		} address;
+		struct
+		{
+			size_t raw_address       : 56;
+			size_t colour            : 2;
+			size_t relocate          : 2;  // 0 = resident, 1 = moving, 2 = moved
+			size_t reference_count   : 3;  // 0-6 = rced, 7 = gced
+			size_t destructed        : 1;
+		} header;
+		struct
+		{
+			size_t raw_address : 56;
+			size_t raw_header  : 8;
+		} layout;
 		struct
 		{
 			size_t pointer : 40;
@@ -109,7 +107,7 @@ namespace gc
 			free           = 3  // free:  already reclaimed (e.g. by ref-count)
 		};
 
-		static gc_bits _gc_build_reference(void* memory, ptrdiff_t base_offset);
+		static gc_bits _gc_build_reference(object_base* memory, ptrdiff_t typed_offset);
 
 		static const gc_bits zero;
 	};
@@ -228,7 +226,7 @@ namespace gc
 			if(location.raw.pointer == 0) {
 				return nullptr;
 			}
-			const size_t offset = (location.bits.address.page_number * page_size) + (location.bits.address.page_offset << maximum_alignment_shift);
+			const size_t offset = (location.address.page_number * page_size) + (location.address.page_offset << maximum_alignment_shift);
 			return base + offset;
 		}
 	
@@ -241,8 +239,8 @@ namespace gc
 			//assert(offset % maximum_alignment == 0);
 
 			gc_bits value = { 0 };
-			value.bits.address.page_number = offset / page_size;
-			value.bits.address.page_offset = (offset % page_size) >> maximum_alignment_shift;
+			value.address.page_number = offset / page_size;
+			value.address.page_offset = (offset % page_size) >> maximum_alignment_shift;
 			return value;
 		}
 	};
@@ -264,7 +262,7 @@ namespace gc
 
 		std::pair<size_t, uint8_t> get_bit_position(void* address);
 
-		std::unique_ptr< std::atomic<uint8_t /*std::byte*/>[] > bits;
+		std::unique_ptr<std::atomic<uint8_t /*std::byte*/>[]> bits;
 	};
 
 	struct collector
@@ -292,7 +290,7 @@ namespace gc
 
 		arena the_arena;
 
-		std::atomic<size_t> current_nmt;
+		std::atomic<size_t> current_marker_phase;
 		std::atomic<size_t> condemned_colour;
 		std::atomic<size_t> scanned_colour;
 
@@ -327,7 +325,7 @@ namespace gc
 	{
 		object_base() noexcept {
 			gc_bits bits = count.load(std::memory_order_acquire);
-			bits.bits.header.reference_count = 1;
+			bits.header.reference_count = 1;
 			count.store(bits, std::memory_order_release);
 		}
 
@@ -336,7 +334,7 @@ namespace gc
 		object_base& operator=(const object_base&) = delete;
 		object_base& operator=(object_base&&) = delete;
 
-		virtual ~object_base() {
+		virtual ~object_base() noexcept {
 		}
 
 		static void* operator new  (size_t) = delete;
@@ -346,11 +344,28 @@ namespace gc
 
 		virtual void _gc_trace(visitor*) const = 0;
 
+		static void guarded_destruct(const object_base* obj) {
+			for(;;) {
+				gc_bits original = obj->count.load(std::memory_order_acquire);
+				if(original.header.destructed) {
+					return;
+				}
+				gc_bits updated = original;
+				updated.header.destructed = 1;
+				if(obj->count.compare_exchange_strong(original, updated, std::memory_order_release)) {
+					nuller n;
+					obj->_gc_trace(&n);
+					obj->~object_base();
+					return;
+				}
+			}
+		}
+
 	protected:
 		void _gc_set_block_unsafe(void* addr) noexcept {
 			gc_bits location = the_gc.the_arena._gc_unresolve(addr);
 			gc_bits current = count.load(std::memory_order_acquire);
-			current.bits.header.raw_address = location.bits.header.raw_address;
+			current.header.raw_address = location.header.raw_address;
 			count.store(current, std::memory_order_release);
 		}
 
@@ -378,13 +393,13 @@ namespace gc
 		size_t _gc_add_ref() const noexcept {
 			for(;;) {
 				gc_bits current = count.load(std::memory_order_acquire);
-				if(current.bits.header.reference_count == get_max_ref_count()) {
+				if(current.header.reference_count == get_max_ref_count()) {
 					return get_max_ref_count();
 				}
 				gc_bits new_value = current;
-				++new_value.bits.header.reference_count;
+				++new_value.header.reference_count;
 				if(count.compare_exchange_strong(current, new_value)) {
-					return new_value.bits.header.reference_count;
+					return new_value.header.reference_count;
 				}
 			}
 		}
@@ -392,19 +407,19 @@ namespace gc
 		size_t _gc_del_ref() const noexcept {
 			for(;;) {
 				gc_bits current = count.load(std::memory_order_acquire);
-				if(current.bits.header.reference_count == get_max_ref_count()) {
+				if(current.header.reference_count == get_max_ref_count()) {
 					return get_max_ref_count();
 				}
 				gc_bits new_value = current;
-				--new_value.bits.header.reference_count;
+				--new_value.header.reference_count;
 				if(count.compare_exchange_strong(current, new_value)) {
 
-					if(current.bits.header.reference_count == 1) {
+					if(current.header.reference_count == 1) {
 						//void* block = this->_gc_get_block();
-						this->~object_base();
+						object_base::guarded_destruct(this);
 						//the_gc.the_arena.deallocate(block);
 					}
-					return new_value.bits.header.reference_count;
+					return new_value.header.reference_count;
 				}
 			}
 		}
@@ -433,14 +448,14 @@ namespace gc
 		array() = delete;
 		array(const array&) = delete;
 
-		explicit array(size_t length_) : len(length_) {
+		explicit array(size_t length_) noexcept(std::is_nothrow_constructible_v<element_type>) : len(length_) {
 			element_type* elts = elements();
 			for(size_t i = 0; i < len; ++i) {
 				new(&elts[i]) element_type();
 			}
 		}
 	
-		explicit array(std::initializer_list<element_type> init) : len(init.size()) {
+		explicit array(std::initializer_list<element_type> init) noexcept(std::is_nothrow_copy_constructible_v<element_type>) : len(init.size()) {
 			size_t offset = 0;
 			for(const element_type& e : init) {
 				new(&(elements()[offset++])) element_type(e);
@@ -448,14 +463,20 @@ namespace gc
 		}
 
 		element_type& operator[](size_t offset) {
+			if(offset >= length()) {
+				throw std::out_of_range("out of bounds");
+			}
 			return elements()[offset];
 		}
 
 		const element_type& operator[](size_t offset) const {
+			if(offset >= length()) {
+				throw std::out_of_range("out of bounds");
+			}
 			return elements()[offset];
 		}
 
-		size_t length() const {
+		size_t length() const noexcept {
 			return len;
 		}
 
@@ -468,11 +489,11 @@ namespace gc
 			return sizeof(array<T>) + (len * sizeof(element_type));
 		}
 
-		element_type* elements() {
+		element_type* elements() noexcept {
 			return reinterpret_cast<element_type*>(this + 1);
 		}
 
-		const element_type* elements() const {
+		const element_type* elements() const noexcept {
 			return reinterpret_cast<const element_type*>(this + 1);
 		}
 
@@ -560,7 +581,7 @@ namespace gc
 			}
 			gc_bits value = _gc_read_barrier();
 			object_base* ob = reinterpret_cast<object_base*>(the_gc.the_arena._gc_resolve(value));
-			byte* derived_object = reinterpret_cast<byte*>(ob) + (value.bits.address.base_offset * static_cast<ptrdiff_t>(sizeof(void*)));
+			byte* derived_object = reinterpret_cast<byte*>(ob) + (value.address.typed_offset * static_cast<ptrdiff_t>(sizeof(void*)));
 			return derived_object;
 		}
 
@@ -581,7 +602,7 @@ namespace gc
 		gc_bits _gc_read_barrier() const noexcept {
 			gc_bits value = pointer.load();
 			bool nmt_changed = false;
-			if(value.bits.address.nmt != the_gc.current_nmt) {
+			if(value.address.seen_by_marker != the_gc.current_marker_phase) {
 				nmt_changed = true;
 			}
 			bool relocated = false;
@@ -597,19 +618,19 @@ namespace gc
 		gc_bits _gc_load_barrier_fix(gc_bits value, bool nmt_changed, bool relocated) const noexcept {
 			gc_bits old_value = value;
 			if(nmt_changed) {
-				value.bits.address.nmt = the_gc.current_nmt;
+				value.address.seen_by_marker = the_gc.current_marker_phase;
 				object_base* ob = reinterpret_cast<object_base*>(the_gc.the_arena._gc_resolve(value));
 				the_gc.queue_object(ob);
 			}
 			if(relocated) {
-				if(value.bits.header.relocate != gc_bits::moved) {
+				if(value.header.relocate != gc_bits::moved) {
 					// TODO perform relocate
 				}
 				// forwarded address stored in the corpse of the old object
 				object_base* ob = reinterpret_cast<object_base*>(the_gc.the_arena._gc_resolve(value));
 				gc_bits relocated_location = ob->count.load(std::memory_order_acquire);
-				value.bits.address.page_number = relocated_location.bits.address.page_number;
-				value.bits.address.page_number = relocated_location.bits.address.page_number;
+				value.address.page_number = relocated_location.address.page_number;
+				value.address.page_number = relocated_location.address.page_number;
 			}
 			pointer.compare_exchange_strong(old_value, value, std::memory_order_release);
 			return value;
@@ -810,12 +831,12 @@ namespace gc
 		void fix_reference(U* source) {
 			T* destination  = dynamic_cast<T*>(source);
 			object_base* ob = dynamic_cast<object_base*>(source);
-			ptrdiff_t base_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-			gc_bits new_address = gc_bits::_gc_build_reference(ob, base_offset);
+			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+			gc_bits new_address = gc_bits::_gc_build_reference(ob, typed_offset);
 			gc_bits current = pointer.load(std::memory_order_acquire);
-			current.bits.address.page_number = new_address.bits.address.page_number;
-			current.bits.address.page_offset = new_address.bits.address.page_offset;
-			current.bits.address.base_offset = new_address.bits.address.base_offset;
+			current.address.page_number = new_address.address.page_number;
+			current.address.page_offset = new_address.address.page_offset;
+			current.address.typed_offset = new_address.address.typed_offset;
 			pointer.store(current, std::memory_order_release);
 		}
 	};
@@ -903,10 +924,9 @@ namespace gc
 		if(destination) {
 			object_base* ob = dynamic_cast<object_base*>(destination);
 			ob->_gc_add_ref();
-			ptrdiff_t base_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-			return handle<To>(reference<To>(gc_bits::_gc_build_reference(ob, base_offset)));
-		}
-		else {
+			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+			return handle<To>(reference<To>(gc_bits::_gc_build_reference(ob, typed_offset)));
+		} else {
 			return handle<To>();
 		}
 	}
@@ -923,9 +943,9 @@ namespace gc
 		gc_bits allocation_base = the_gc.the_arena._gc_unresolve(memory);
 		T* object = new(memory) T(std::forward<Args>(args)...);
 		object_base* ob = dynamic_cast<object_base*>(object);
-		ptrdiff_t base_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
 		object->_gc_set_block_unsafe(memory);
-		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, base_offset)));
+		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, typed_offset)));
 	}
 
 	template<typename T>
@@ -939,9 +959,9 @@ namespace gc
 
 		array_type* object = new(memory) array_type(len);
 		object_base* ob = dynamic_cast<object_base*>(object);
-		ptrdiff_t base_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
 		object->_gc_set_block_unsafe(memory);
-		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, base_offset)));
+		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, typed_offset)));
 	}
 
 	template<typename T>
@@ -956,8 +976,8 @@ namespace gc
 
 		array_type* object = new(memory) array_type(init);
 		object_base* ob = dynamic_cast<object_base*>(object);
-		ptrdiff_t base_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
 		object->_gc_set_block_unsafe(memory);
-		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, base_offset)));
+		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, typed_offset)));
 	}
 }

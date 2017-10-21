@@ -160,6 +160,10 @@ struct B : gc::object {
 	virtual void foo() {
 		std::cout << this << " " << typeid(this).name() << std::endl;
 	}
+
+	virtual ~B() override {
+		std::cout << __FUNCSIG__ << std::endl;
+	}
 };
 
 struct D1 : B {
@@ -170,6 +174,10 @@ struct D1 : B {
 
 	virtual void foo() {
 		std::cout << this << " " << typeid(this).name() << std::endl;
+	}
+
+	virtual ~D1() override {
+		std::cout << __FUNCSIG__ << std::endl;
 	}
 };
 
@@ -182,6 +190,10 @@ struct D2 : B {
 	virtual void foo() {
 		std::cout << this << " " << typeid(this).name() << std::endl;
 	}
+
+	virtual ~D2() override {
+		std::cout << __FUNCSIG__ << std::endl;
+	}
 };
 
 struct D3 : D1, D2 {
@@ -189,6 +201,10 @@ struct D3 : D1, D2 {
 		(D1, D2),
 		()
 	)
+
+	virtual ~D3() override {
+		std::cout << __FUNCSIG__ << std::endl;
+	}
 };
 
 //#include <variant>
@@ -333,6 +349,9 @@ int main() {
 		b2->foo();
 	}
 
+	{
+		handle<D3> d3 = gcnew<D3>();
+	}
 	return 0;
 
 	//segment_size.QuadPart = 1 << 30;

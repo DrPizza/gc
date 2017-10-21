@@ -12,12 +12,12 @@ namespace gc
 
 	collector the_gc;
 
-	gc_bits gc_bits::_gc_build_reference(void* memory, ptrdiff_t base_offset) {
+	gc_bits gc_bits::_gc_build_reference(object_base* memory, ptrdiff_t typed_offset) {
 		gc_bits unresolved = the_gc.the_arena._gc_unresolve(memory);
-		unresolved.bits.address.generation = gc_bits::young;
-		unresolved.bits.address.nmt = the_gc.current_nmt.load(std::memory_order_acquire);
-		unresolved.bits.address.base_offset = base_offset;
-		unresolved.bits.header.colour = gc_bits::grey;
+		unresolved.address.generation = gc_bits::young;
+		unresolved.address.seen_by_marker = the_gc.current_marker_phase.load(std::memory_order_acquire);
+		unresolved.address.typed_offset = typed_offset;
+		unresolved.header.colour = gc_bits::grey;
 		return unresolved;
 	}
 
@@ -152,7 +152,7 @@ namespace gc
 	}
 
 	void collector::flip() {
-		current_nmt.fetch_xor(1ui64, std::memory_order_release);
+		current_marker_phase.fetch_xor(1ui64, std::memory_order_release);
 		condemned_colour.fetch_xor(1ui64, std::memory_order_release);
 		scanned_colour.fetch_xor(1ui64, std::memory_order_release);
 	}
@@ -162,7 +162,7 @@ namespace gc
 		for(;;) {
 			gc_bits old_value = ref.pointer.load(std::memory_order_acquire);
 			gc_bits new_value = old_value;
-			new_value.bits.address.nmt = the_gc.current_nmt;
+			new_value.address.seen_by_marker = the_gc.current_marker_phase;
 			if(ref.pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
 				break;
 			}
@@ -172,12 +172,15 @@ namespace gc
 		if(!obj) {
 			return;
 		}
+		if(obj->count.load(std::memory_order_relaxed).header.destructed) {
+			return;
+		}
 
 		// grey the object
 		for(;;) {
 			gc_bits old_value = obj->count.load(std::memory_order_acquire);
 			gc_bits new_value = old_value;
-			new_value.bits.header.colour = gc_bits::grey;
+			new_value.header.colour = gc_bits::grey;
 			if(obj->count.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
 				break;
 			}
@@ -188,7 +191,7 @@ namespace gc
 		for(;;) {
 			gc_bits old_value = obj->count.load(std::memory_order_acquire);
 			gc_bits new_value = old_value;
-			new_value.bits.header.colour = the_gc.scanned_colour;
+			new_value.header.colour = the_gc.scanned_colour;
 			if(obj->count.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
 				break;
 			}

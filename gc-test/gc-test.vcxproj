@@ -14,7 +14,7 @@
     <ProjectGuid>{EE5E89D0-12CB-46E9-8907-6D970C949896}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>gctest</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.15063.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.16299.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
