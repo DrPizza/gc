@@ -2,7 +2,7 @@
 
 #include "gc.hpp"
 
-namespace gc
+namespace garbage_collection
 {
 	const gc_bits gc_bits::zero = { 0 };
 
@@ -10,12 +10,10 @@ namespace gc
 
 	thread_local thread_data this_gc_thread;
 
-	collector the_gc;
-
-	gc_bits gc_bits::_gc_build_reference(object_base* memory, ptrdiff_t typed_offset) {
-		gc_bits unresolved = the_gc.the_arena._gc_unresolve(memory);
+	gc_bits gc_bits::_gc_build_reference(collector* the_gc, arena* the_arena, object_base* memory, ptrdiff_t typed_offset) {
+		gc_bits unresolved = the_arena->_gc_unresolve(memory);
 		unresolved.address.generation = gc_bits::young;
-		unresolved.address.seen_by_marker = the_gc.current_marker_phase.load(std::memory_order_acquire);
+		unresolved.address.seen_by_marker = the_gc->current_marker_phase.load(std::memory_order_acquire);
 		unresolved.address.typed_offset = typed_offset;
 		unresolved.header.colour = gc_bits::grey;
 		return unresolved;
@@ -145,14 +143,14 @@ namespace gc
 
 		scan_roots();
 
-		marker m(this);
+		marker m(this, &the_arena);
 
 		//m.trace()
 	}
 	
 	void collector::scan_roots() {
 		root_set roots{};
-		for(gc::object_base* root : roots) {
+		for(object_base* root : roots) {
 			queue_object(root);
 		}
 	}
@@ -168,7 +166,7 @@ namespace gc
 		for(;;) {
 			gc_bits old_value = ref->pointer.load(std::memory_order_acquire);
 			gc_bits new_value = old_value;
-			new_value.address.seen_by_marker = the_gc.current_marker_phase;
+			new_value.address.seen_by_marker = the_gc->current_marker_phase;
 			if(ref->pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
 				break;
 			}
@@ -185,9 +183,9 @@ namespace gc
 		if(obj->count.load(std::memory_order_relaxed).header.destructed) {
 			return;
 		}
-		void* base_address = obj->_gc_get_block();
-		if(!the_gc.is_marked_reachable(base_address)) {
-			the_gc.mark_reachable(base_address);
+		void* base_address = obj->_gc_get_block(the_arena);
+		if(!the_gc->is_marked_reachable(base_address)) {
+			the_gc->mark_reachable(base_address);
 			obj->_gc_trace(this);
 		}
 	}

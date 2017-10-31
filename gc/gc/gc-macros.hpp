@@ -64,7 +64,7 @@
 	VISIT_GC_MEMBERS __VA_ARGS__
 
 #define DECLARE_GC_MEMBER(PROTECTION, TYPE, NAME) \
-	PROTECTION: gc::member<TYPE> NAME;
+	PROTECTION: garbage_collection::member<TYPE> NAME;
 
 #define DECLARE_GC_MEMBER_IND(...) \
 	DECLARE_GC_MEMBER __VA_ARGS__
@@ -78,7 +78,7 @@
 #define DEFINE_GC_MEMBERS(BASES, MEMBERS) \
 	DECLARE_GC_MEMBERS_IND(MEMBERS) \
 	public: \
-	virtual void _gc_trace(gc::visitor* visitor__) const override { \
+	virtual void _gc_trace(garbage_collection::visitor* visitor__) const override { \
 		VISIT_GC_MEMBERS_IND(MEMBERS) \
 		VISIT_GC_BASES_IND(BASES) \
 	}

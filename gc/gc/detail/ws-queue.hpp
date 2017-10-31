@@ -13,7 +13,7 @@
 // queue from http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.170.1097&rep=rep1&type=pdf
 // atomics taken from http://www.di.ens.fr/~zappa/readings/ppopp13.pdf
 
-namespace gc
+namespace garbage_collection
 {
 	struct empty_t {};
 	struct abort_t {};

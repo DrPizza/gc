@@ -4,7 +4,7 @@
 #include <atomic>
 #include <type_traits>
 
-namespace gc
+namespace garbage_collection
 {
 	template<typename T>
 	struct circular_array;

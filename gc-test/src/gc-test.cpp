@@ -80,17 +80,19 @@ int filter(unsigned int code, struct _EXCEPTION_POINTERS *ep) {
 	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-struct my_object : gc::object {
+garbage_collection::collector gc;
+
+struct my_object : garbage_collection::object {
 	virtual void hello_world() const {
 		std::cout << "Hello, World!" << std::endl;
 	}
 
-	virtual void _gc_trace(gc::visitor* visitor) const override {
-		gc::object::_gc_trace(visitor);
+	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
+		garbage_collection::object::_gc_trace(visitor);
 	}
 };
 
-struct ambiguous_object : gc::object {
+struct ambiguous_object : garbage_collection::object {
 	ambiguous_object(size_t parameter) : value(parameter) {
 		std::cout << "parameter: " << parameter << std::endl;
 	}
@@ -99,28 +101,28 @@ struct ambiguous_object : gc::object {
 		std::cout << "foo: " << value << std::endl;
 	}
 
-	virtual void _gc_trace(gc::visitor* visitor) const override {
+	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
 		std::cout << __FUNCSIG__ << std::endl;
-		gc::object::_gc_trace(visitor);
+		garbage_collection::object::_gc_trace(visitor);
 	}
 
 private:
 	size_t value;
 };
 
-struct left : gc::object
+struct left : garbage_collection::object
 {
-	virtual void _gc_trace(gc::visitor* visitor) const override {
+	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
 		std::cout << __FUNCSIG__ << std::endl;
-		gc::object::_gc_trace(visitor);
+		garbage_collection::object::_gc_trace(visitor);
 	}
 };
 
-struct right : gc::object
+struct right : garbage_collection::object
 {
-	virtual void _gc_trace(gc::visitor* visitor) const override {
+	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
 		std::cout << __FUNCSIG__ << std::endl;
-		gc::object::_gc_trace(visitor);
+		garbage_collection::object::_gc_trace(visitor);
 	}
 };
 
@@ -135,8 +137,8 @@ struct right : gc::object
 
 struct combined : left, right
 {
-	combined() : ao1(gc::gcnew<ambiguous_object>(10u)),
-	             ao2(gc::gcnew<ambiguous_object>(11u))
+	combined() : ao1(gc.gcnew<ambiguous_object>(10u)),
+	             ao2(gc.gcnew<ambiguous_object>(11u))
 	{
 		ao1->foo();
 		ao2->foo();
@@ -151,9 +153,9 @@ struct combined : left, right
 	)
 };
 
-struct B : gc::object {
+struct B : garbage_collection::object {
 	DEFINE_GC_MEMBERS(
-		(gc::object),
+		(garbage_collection::object),
 		()
 	)
 
@@ -243,7 +245,7 @@ struct D3 : D1, D2 {
 //}
 
 int main() {
-	using namespace gc;
+	using namespace garbage_collection;
 	{
 		work_stealing_queue<void*> wsq;
 		wsq.push(nullptr);
@@ -297,48 +299,47 @@ int main() {
 	}
 
 	{
-		handle<my_object> obj = gcnew<my_object>();
+		handle<my_object> obj = gc.gcnew<my_object>();
 		obj->hello_world();
 		obj->hello_world();
 		handle<my_object> obj2(obj);
 		obj2->hello_world();
 		obj2->hello_world();
-		handle<ambiguous_object  > ao = gcnew<ambiguous_object  >(3UL);
+		handle<ambiguous_object  > ao = gc.gcnew<ambiguous_object  >(3UL);
 		ao->foo();
-		handle<ambiguous_object[]> ar1 = gcnew<ambiguous_object[]>(4);
-		handle<ambiguous_object[]> ar2 = gcnew<ambiguous_object[]>({ gcnew<ambiguous_object>(5UL) });
+		handle<ambiguous_object[]> ar1 = gc.gcnew<ambiguous_object[]>(4);
+		handle<ambiguous_object[]> ar2 = gc.gcnew<ambiguous_object[]>({ gc.gcnew<ambiguous_object>(5UL) });
 		ar2[0]->foo();
 	}
 
 	{
-		handle<size_t[]          > sa1 = gcnew<size_t[]>(1);
-		handle<size_t[]          > sa2 = gcnew<size_t[]>({ 1, 2, 3, 4 });
+		handle<size_t[]          > sa1 = gc.gcnew<size_t[]>(1);
+		handle<size_t[]          > sa2 = gc.gcnew<size_t[]>({ 1, 2, 3, 4 });
 		std::cout << sa2[0] << std::endl;
 	}
 
 	{
-		handle<combined> c = gcnew<combined>();
+		handle<combined> c = gc.gcnew<combined>();
 		handle<left> l1 = c;
 		handle<left> l2(c);
 		handle<left> l3; l3 = c;
 
-		handle<combined> c2 = gc_cast<combined>(l1);
-		handle<ambiguous_object> ao = gcnew<ambiguous_object>(3UL);
-		handle<combined> c3 = gc_cast<combined>(ao);
+		handle<combined> c2 = gc.gc_cast<combined>(l1);
+		handle<ambiguous_object> ao = gc.gcnew<ambiguous_object>(3UL);
+		handle<combined> c3 = gc.gc_cast<combined>(ao);
 
-		marker m(&the_gc);
-		m.trace(c);
+		gc.mark();
 	}
 
 	{
-		handle<D3> d3 = gcnew<D3>();
+		handle<D3> d3 = gc.gcnew<D3>();
 		handle<D1> d1 = d3;
 		handle<D2> d2 = d3;
 
 		handle<B> b1 = d1; // ok
 		handle<B> b2 = d2; // ok
 
-		handle<B> b3 = gc_cast<B>(gc_cast<D1>(d3));
+		handle<B> b3 = gc.gc_cast<B>(gc.gc_cast<D1>(d3));
 
 		std::cout << !!b1 << " " << !!b2 << std::endl;
 
@@ -350,11 +351,11 @@ int main() {
 	}
 
 	{
-		handle<D3> d3 = gcnew<D3>();
+		handle<D3> d3 = gc.gcnew<D3>();
 	}
 	{
-		handle<box<int>> b1 = gcnew<box<int>>(1);
-		handle<int> b2 = gcnew<int>(1);
+		handle<box<int>> b1 = gc.gcnew<box<int>>(1);
+		handle<int> b2 = gc.gcnew<int>(1);
 
 #define TEST(type) std::cout << #type << " normalized: " << typeid(normalize_t<type>).name() << std::endl
 		TEST(int);
