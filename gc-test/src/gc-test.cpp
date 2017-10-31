@@ -352,6 +352,36 @@ int main() {
 	{
 		handle<D3> d3 = gcnew<D3>();
 	}
+	{
+		handle<box<int>> b1 = gcnew<box<int>>(1);
+		handle<int> b2 = gcnew<int>(1);
+
+#define TEST(type) std::cout << #type << " normalized: " << typeid(normalize_t<type>).name() << std::endl
+		TEST(int);
+		TEST(int[]);
+		TEST(int[1][1]);
+		TEST(int[][1]);
+		TEST(array<int>);
+		TEST(array<int[]>);
+		TEST(array<int[1]>);
+		TEST(array<int[][1]>);
+		TEST(array<int[1][1]>);
+		TEST(array<int>[]);
+		TEST(array<int>[1]);
+		TEST(array<int>[][1]);
+		TEST(array<int>[1][1]);
+		TEST(array<array<int>>);
+		TEST(B[]);
+		TEST(array<B>);
+		TEST(array<array<B>>);
+		TEST(B);
+		TEST(my_object);
+		TEST(ambiguous_object);
+#undef TEST
+
+		std::cout << typeid(handle<my_object>).name() << std::endl;
+		std::cout << typeid(handle<ambiguous_object>).name() << std::endl;
+	}
 	return 0;
 
 	//segment_size.QuadPart = 1 << 30;

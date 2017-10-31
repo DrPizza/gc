@@ -62,7 +62,7 @@ namespace gc
 	{
 		size_t value;
 		// used by raw_reference to point to an object_base on the gc heap
-		// used by reference<T>  to include the offset to the T object on the gc heap
+		// used by reference_t<T>  to include the offset to the T object on the gc heap
 		// used by object_base to record either the start of the containing memory block, or the relocated object
 		struct
 		{
@@ -153,15 +153,53 @@ namespace gc
 	struct raw_reference;
 
 	template<typename T>
-	struct reference;
+	struct reference_t;
 
 	template<typename T>
-	struct handle;
+	struct handle_t;
 
 	template<typename T>
 	struct array;
 
-	struct finalized_object;
+	template<typename T>
+	struct box;
+
+	template<typename T, bool InArray>
+	struct normalize {
+		using type = std::conditional_t<std::is_base_of_v<object_base, T>,
+		                                T,
+		                                std::conditional_t<InArray, T, box<T>>
+		>;
+	};
+
+	template<typename T, bool InArray>
+	struct normalize<array<T>, InArray> {
+		using type = array<typename normalize<T, true>::type>;
+	};
+
+	template<typename T, bool InArray>
+	struct normalize<T[], InArray> {
+		using type = array<typename normalize<T, true>::type>;
+	};
+
+	template<typename T, bool InArray, size_t N>
+	struct normalize<T[N], InArray> {
+		using type = array<typename normalize<T, true>::type>;
+	};
+
+	template<typename T>
+	using normalize_t = typename normalize<T, false>::type;
+
+	template<typename T>
+	struct is_array : std::false_type {
+	};
+
+	template<typename T>
+	struct is_array<array<T>> : std::true_type {
+	};
+
+	template<typename T>
+	constexpr bool is_array_v = is_array<T>::value;
 
 	struct visitor
 	{
@@ -201,6 +239,7 @@ namespace gc
 
 		struct allocation_header {
 			std::atomic<size_t> allocated_size;
+			ptrdiff_t object_offset;
 		};
 
 		void* allocate(size_t amount);
@@ -217,9 +256,14 @@ namespace gc
 			return old_location;
 		}
 
-		size_t get_block_size(void* block) const noexcept {
+		allocation_header* get_header(void* block) const noexcept {
 			byte* region = static_cast<byte*>(block);
 			allocation_header* header = reinterpret_cast<allocation_header*>(region - sizeof(allocation_header));
+			return header;
+		}
+
+		size_t get_block_size(void* block) const noexcept {
+			allocation_header* header = get_header(block);
 			return header->allocated_size.load(std::memory_order_acquire);
 		}
 
@@ -252,14 +296,18 @@ namespace gc
 
 		}
 
-		void set_bit(void* address) {
+		uint8_t set_bit(void* address) {
 			std::pair<size_t, uint8_t> position = get_bit_position(address);
-			bits[position.first].fetch_or ( static_cast<uint8_t>(1ui8 << position.second), std::memory_order_release);
+			uint8_t mask = static_cast<uint8_t>(1ui8 << position.second);
+			uint8_t orig = bits[position.first].fetch_or(mask, std::memory_order_release);
+			return static_cast<uint8_t>((orig & mask) >> position.second);
 		}
 
-		void clear_bit(void* address) {
+		uint8_t clear_bit(void* address) {
 			std::pair<size_t, uint8_t> position = get_bit_position(address);
-			bits[position.first].fetch_and(~static_cast<uint8_t>(1ui8 << position.second), std::memory_order_release);
+			uint8_t mask = static_cast<uint8_t>(1ui8 << position.second);
+			uint8_t orig = bits[position.first].fetch_and(static_cast<uint8_t>(~mask), std::memory_order_release);
+			return static_cast<uint8_t>((orig & mask) >> position.second);
 		}
 
 		bool query_bit(void* address) {
@@ -317,9 +365,20 @@ namespace gc
 			reachables.set_bit(address);
 		}
 
+		void mark_allocated(void* address) {
+			allocateds.set_bit(address);
+		}
+
 	private:
 		friend struct object_base;
 		friend struct marker;
+
+		template<typename T, typename... Args>
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(Args&&... args);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(size_t size);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
 		using root_set = std::vector<object_base*>;
 
@@ -387,6 +446,13 @@ namespace gc
 
 		static void guarded_destruct(const object_base* obj) {
 			for(;;) {
+				// some casual UB here: we read from a potentially-already-destructed object.
+				// we know that the destructor leaves the object in a valid/meaningful state.
+				// we could in principle use a 'finalize' method and never call the real d-tor,
+				// but that's tedious to plumb into every subobject properly. We want the 
+				// automatic destruction of child objects etc, which only the real destructor
+				// gives us. This is important because as often as possible, we want members
+				// to use ref-count rather than full GC.
 				gc_bits original = obj->count.load(std::memory_order_acquire);
 				if(original.header.destructed) {
 					return;
@@ -403,11 +469,14 @@ namespace gc
 		}
 
 	protected:
-		void _gc_set_block_unsafe(void* addr) noexcept {
+		void _gc_set_block_unsafe(void* addr, object_base* obj) noexcept {
 			gc_bits location = the_gc.the_arena._gc_unresolve(addr);
 			gc_bits current = count.load(std::memory_order_acquire);
 			current.header.raw_address = location.header.raw_address;
 			count.store(current, std::memory_order_release);
+
+			the_gc.mark_allocated(addr);
+			the_gc.the_arena.get_header(addr)->object_offset = reinterpret_cast<byte*>(obj) - reinterpret_cast<byte*>(addr);
 		}
 
 		void* _gc_get_block() const noexcept {
@@ -419,14 +488,14 @@ namespace gc
 		mutable gc_pointer count;
 
 		template<typename T, typename... Args>
-		friend std::enable_if_t<!std::is_array_v<T>, handle<T> > gcnew(Args&&... args);
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(Args&&... args);
 		template<typename T>
-		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(size_t size);
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(size_t size);
 		template<typename T>
-		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
 		template<typename To, typename From>
-		friend handle<To> gc_cast(const reference<From>& rhs);
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
 
 		friend struct marker;
 		friend struct raw_reference;
@@ -474,17 +543,16 @@ namespace gc
 
 	template<typename T>
 	struct
-	alignas(std::conditional_t<std::is_base_of_v<object, T>, reference<T>, T>)
+	alignas(std::conditional_t<std::is_base_of_v<object, T>, reference_t<T>, T>)
 	alignas(object)
-	alignas(size_t)
-	array : object
+	array final : object
 	{
 		template<typename T>
-		friend std::enable_if_t<std::is_array_v<T>, handle<T> > gcnew(size_t size);
+		friend std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(size_t size);
 		template<typename T>
-		friend std::enable_if_t<std::is_array_v<T>, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
+		friend std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
-		using element_type = std::conditional_t<std::is_base_of_v<object, T>, reference<T>, T>;
+		using element_type = std::conditional_t<std::is_base_of_v<object, T>, reference_t<T>, T>;
 
 		array() = delete;
 		array(const array&) = delete;
@@ -548,6 +616,32 @@ namespace gc
 
 		size_t len;
 		// element_type elements[];
+	};
+
+	template<typename T>
+	struct box final : object {
+		using element_type = std::conditional_t<std::is_base_of_v<object, T>, reference_t<T>, T>;
+
+		box(const element_type& e) noexcept(std::is_nothrow_copy_constructible_v<element_type>) : val(e) {
+		}
+
+		virtual void _gc_trace(visitor* v) const override {
+			if constexpr(std::is_base_of_v<object, T>) {
+				v->trace(val);
+			}
+			return object::_gc_trace(v);
+		}
+
+		operator element_type&() noexcept {
+			return val;
+		}
+
+		operator const element_type&() const noexcept {
+			return val;
+		}
+
+	private:
+		element_type val;
 	};
 
 	struct raw_reference
@@ -674,7 +768,7 @@ namespace gc
 		friend struct nuller;
 
 		template<typename T>
-		friend struct reference;
+		friend struct reference_t;
 
 		raw_reference(gc_bits bits) noexcept : pointer(bits) {
 		}
@@ -798,32 +892,31 @@ namespace gc
 
 	// a typed GCed reference
 	template<typename T>
-	struct reference : raw_reference
+	struct reference_t : raw_reference
 	{
-		static_assert(std::is_base_of_v<object, T> || std::is_array_v<T>, "T must be derived from object");
+		static_assert(std::is_base_of_v<object, T>, "T must be derived from object");
 
-		using referenced_type = std::conditional_t<std::is_array_v<T>, array<std::remove_extent_t<T> >, T>;
+		using referenced_type = T;
 
-		using my_type   = reference<T>;
+		using my_type   = reference_t<T>;
 		using base_type = raw_reference;
 
-		reference() noexcept : base_type() {
+		reference_t() noexcept : base_type() {
 		}
 
-		reference(std::nullptr_t) noexcept : base_type(nullptr) {
+		reference_t(std::nullptr_t) noexcept : base_type(nullptr) {
 		}
 
-		// TODO ensure equivalence between reference<T[]> and reference<array<T> >
-		reference(const my_type& rhs) noexcept : base_type(rhs) {
+		reference_t(const my_type& rhs) noexcept : base_type(rhs) {
 		}
 
-		template<typename U, typename = std::enable_if_t<(std::is_base_of_v<T, U> && std::is_convertible_v<U*, T*>)|| (std::is_array_v<T> && std::is_same_v<T, U>) > >
-		reference(const reference<U>& rhs) noexcept : base_type(rhs) {
+		template<typename U, typename = std::enable_if_t<(std::is_base_of_v<T, U> && std::is_convertible_v<U*, T*>)|| (is_array_v<T> && std::is_same_v<T, U>) > >
+		reference_t(const reference_t<U>& rhs) noexcept : base_type(rhs) {
 			fix_reference(rhs._gc_resolve());
 		}
 
-		template<typename U, typename = std::enable_if_t<(std::is_base_of_v<T, U> && std::is_convertible_v<U*, T*>) || (std::is_array_v<T> && std::is_same_v<T, U>) > >
-		my_type& operator=(const reference<U>& rhs) noexcept {
+		template<typename U, typename = std::enable_if_t<(std::is_base_of_v<T, U> && std::is_convertible_v<U*, T*>) || (is_array_v<T> && std::is_same_v<T, U>) > >
+		my_type& operator=(const reference_t<U>& rhs) noexcept {
 			base_type::operator=(rhs);
 			fix_reference(rhs._gc_resolve());
 			return *this;
@@ -839,7 +932,7 @@ namespace gc
 		}
 
 		template<typename U = T>
-		std::enable_if_t<std::is_array_v<U>, typename array<std::remove_extent_t<U>>::element_type&>
+		std::enable_if_t<is_array_v<U>, typename U::element_type&>
 		operator[](size_t offset) const noexcept {
 			return _gc_resolve()->operator[](offset);
 		}
@@ -851,21 +944,21 @@ namespace gc
 
 	private:
 		template<typename T>
-		friend struct reference;
+		friend struct reference_t;
 
 		template<typename T, typename... Args>
-		friend std::enable_if_t<!std::is_array_v<T>, handle<T> > gcnew(Args&&... args);
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(Args&&... args);
 		template<typename T>
-		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(size_t size);
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(size_t size);
 		template<typename T>
-		friend std::enable_if_t< std::is_array_v<T>, handle<T> > gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init);
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 		template<typename T>
 		friend struct array;
 
 		template<typename To, typename From>
-		friend handle<To> gc_cast(const reference<From>& rhs);
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
 
-		reference(gc_bits bits) noexcept : raw_reference(bits) {
+		reference_t(gc_bits bits) noexcept : raw_reference(bits) {
 		}
 
 		template<typename U>
@@ -883,10 +976,10 @@ namespace gc
 	};
 
 	template<typename T, typename Self>
-	struct registered_reference : reference<T>
+	struct registered_reference : reference_t<T>
 	{
 		using my_type = registered_reference<T, Self>;
-		using base_type = reference<T>;
+		using base_type = reference_t<T>;
 
 		using base_type::base_type;
 		using base_type::operator=;
@@ -909,18 +1002,18 @@ namespace gc
 
 	// a typed GCed reference that registers itself as a field (no registration)
 	template<typename T>
-	struct member : reference<T> {
-		using base_type = reference<T>;
-		using my_type   = member<T>;
+	struct member_t : reference_t<T> {
+		using base_type = reference_t<T>;
+		using my_type   = member_t<T>;
 
 		using base_type::base_type;
 	};
 
 	// a typed GCed reference that registers itself as a global
 	template<typename T>
-	struct global : registered_reference<T, global<T> > {
-		using base_type = registered_reference<T, global<T> >;
-		using my_type = global<T>;
+	struct global_t : registered_reference<T, global_t<T> > {
+		using base_type = registered_reference<T, global_t<T> >;
+		using my_type = global_t<T>;
 
 		using base_type::base_type;
 		using base_type::operator=;
@@ -937,10 +1030,10 @@ namespace gc
 
 	// a typed GCed reference that registers itself as a stack variable
 	template<typename T>
-	struct handle : registered_reference<T, handle<T> >
+	struct handle_t : registered_reference<T, handle_t<T> >
 	{
-		using base_type = registered_reference<T, handle<T> >;
-		using my_type   = handle<T>;
+		using base_type = registered_reference<T, handle_t<T> >;
+		using my_type   = handle_t<T>;
 
 		using base_type::base_type;
 
@@ -955,70 +1048,86 @@ namespace gc
 	};
 
 	template<typename To, typename From>
-	handle<To> gc_cast(const reference<From>& rhs) {
+	handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs) {
+		using real_type = normalize_t<To>;
 		if(!rhs) {
-			return handle<To>();
+			return handle_t<real_type>();
 		}
 
 		From* object = rhs._gc_resolve();
-		To* destination = dynamic_cast<To*>(object);
+		real_type* destination = dynamic_cast<real_type*>(object);
 		if(destination) {
 			object_base* ob = dynamic_cast<object_base*>(destination);
 			ob->_gc_add_ref();
 			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-			return handle<To>(reference<To>(gc_bits::_gc_build_reference(ob, typed_offset)));
+			return handle_t<real_type>(reference_t<real_type>(gc_bits::_gc_build_reference(ob, typed_offset)));
 		} else {
-			return handle<To>();
+			return handle_t<real_type>();
 		}
 	}
 
 	template<typename T, typename... Args>
-	std::enable_if_t<!std::is_array_v<T>, handle<T> > inline gcnew(Args&&... args) {
+	std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline gcnew(Args&&... args) {
 		thread_data::guard_unsafe g;
-		static_assert(std::is_base_of_v<object, T>, "T must be derived from object");
-		void* memory = the_gc.the_arena.allocate(sizeof(T));
+		using real_type = normalize_t<T>;
+
+		void* memory = the_gc.the_arena.allocate(sizeof(real_type));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
 		gc_bits allocation_base = the_gc.the_arena._gc_unresolve(memory);
-		T* object = new(memory) T(std::forward<Args>(args)...);
+		real_type* object = new(memory) real_type(std::forward<Args>(args)...);
 		object_base* ob = dynamic_cast<object_base*>(object);
 		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-		object->_gc_set_block_unsafe(memory);
-		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, typed_offset)));
+		object->_gc_set_block_unsafe(memory, ob);
+		return handle_t<real_type>(reference_t<real_type>(gc_bits::_gc_build_reference(ob, typed_offset)));
 	}
 
 	template<typename T>
-	std::enable_if_t<std::is_array_v<T>, handle<T> > inline gcnew(size_t len) {
+	std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline gcnew(size_t len) {
 		thread_data::guard_unsafe g;
-		using array_type = array<std::remove_extent_t<T> >;
-		void* memory = the_gc.the_arena.allocate(array_type::allocation_size(len));
+		using real_type = normalize_t<T>;
+
+		void* memory = the_gc.the_arena.allocate(real_type::allocation_size(len));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
-		array_type* object = new(memory) array_type(len);
+		real_type* object = new(memory) real_type(len);
 		object_base* ob = dynamic_cast<object_base*>(object);
 		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-		object->_gc_set_block_unsafe(memory);
-		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, typed_offset)));
+		object->_gc_set_block_unsafe(memory, ob);
+		return handle_t<real_type>(reference_t<real_type>(gc_bits::_gc_build_reference(ob, typed_offset)));
 	}
 
 	template<typename T>
-	std::enable_if_t<std::is_array_v<T>, handle<T> > inline gcnew(std::initializer_list<typename array<std::remove_extent_t<T> >::element_type> init) {
+	std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>> > inline gcnew(std::initializer_list<typename normalize_t<T>::element_type> init) {
 		thread_data::guard_unsafe g;
-		using array_type = array<std::remove_extent_t<T> >;
+		using real_type = normalize_t<T>;
+
 		size_t size = init.size();
-		void* memory = the_gc.the_arena.allocate(array_type::allocation_size(size));
+		void* memory = the_gc.the_arena.allocate(real_type::allocation_size(size));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
-		array_type* object = new(memory) array_type(init);
+		real_type* object = new(memory) real_type(init);
 		object_base* ob = dynamic_cast<object_base*>(object);
 		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-		object->_gc_set_block_unsafe(memory);
-		return handle<T>(reference<T>(gc_bits::_gc_build_reference(ob, typed_offset)));
+		object->_gc_set_block_unsafe(memory, ob);
+		return handle_t<real_type>(reference_t<real_type>(gc_bits::_gc_build_reference(ob, typed_offset)));
 	}
+
+	template<typename T>
+	using reference = reference_t<normalize_t<T>>;
+
+	template<typename T>
+	using handle = handle_t<normalize_t<T>>;
+
+	template<typename T>
+	using member = member_t<normalize_t<T>>;
+
+	template<typename T>
+	using global = global_t<normalize_t<T>>;
 }
