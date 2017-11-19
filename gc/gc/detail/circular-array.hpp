@@ -85,6 +85,9 @@ namespace garbage_collection
 		static circular_array<T>* make_circular_array(size_t log_size, circular_array<T>* previous) {
 			const size_t allocation_size = get_allocation_size(log_size);
 			void* raw_memory = ::operator new(allocation_size);
+			// this generates a spurious warning C6386: Buffer overrun while writing to 'raw_memory':  the writable size is 'allocation_size' bytes, but '16' bytes might be written.
+			// the assumption suppresses the warning. I don't know why it can't see that this is true.
+			__analysis_assume(allocation_size >= sizeof(circular_array<T>));
 			return new(raw_memory) circular_array<T>(log_size, previous);
 		}
 

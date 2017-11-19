@@ -1,4 +1,4 @@
-// gc-test.cpp : Defines the entry point for the console application.
+﻿// gc-test.cpp : Defines the entry point for the console application.
 //
 
 #include "stdafx.h"
@@ -12,43 +12,43 @@ void* read_write;
 void* read_only;
 ULARGE_INTEGER segment_size;
 
-bool is_in_ro_segment(void* address) {
-	if(reinterpret_cast<size_t>(read_only) <= reinterpret_cast<size_t>(address)
-	&& reinterpret_cast<size_t>(address)   <  reinterpret_cast<size_t>(read_only) + segment_size.QuadPart) {
+bool is_in_ro_segment(const void* const address) {
+	if(static_cast<const byte*>(read_only) <= static_cast<const byte*>(address  )
+	&& static_cast<const byte*>(address  ) <  static_cast<const byte*>(read_only) + segment_size.QuadPart) {
 		return true;
 	}
 	return false;
 }
 
-size_t get_ro_offset(void* address) {
+size_t get_ro_offset(const void* const address) {
 	if(is_in_ro_segment(address)) {
-		return reinterpret_cast<size_t>(address) - reinterpret_cast<size_t>(read_only);
+		return static_cast<size_t>(static_cast<const byte*>(address) - static_cast<const byte*>(read_only));
 	} else {
 		return 0;
 	}
 }
 
-void* ro_to_rw(void* address) {
+void* ro_to_rw(const void* const address) {
 	if(is_in_ro_segment(address)) {
-		return reinterpret_cast<void*>(reinterpret_cast<size_t>(read_write) + get_ro_offset(address));
+		return static_cast<void*>(static_cast<byte*>(read_write) + get_ro_offset(address));
 	} else {
 		return nullptr;
 	}
 }
 
-int filter(unsigned int code, struct _EXCEPTION_POINTERS *ep) {
-	if(code != 0xc0000005) { // access denied
+[[gsl::suppress(type.1)]]
+int filter(unsigned int, _EXCEPTION_POINTERS* ep) {
+	if(ep->ExceptionRecord->ExceptionCode != 0xc000'0005) { // access denied
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
 	if(ep->ExceptionRecord->ExceptionInformation[0] != 1) { // write
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
-	size_t target = ep->ExceptionRecord->ExceptionInformation[1];
+	const size_t target = ep->ExceptionRecord->ExceptionInformation[1];
 	if(!is_in_ro_segment(reinterpret_cast<void*>(target))) {
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
-	// maybe disassemble ep->ExceptionRecord->ExceptionAddress to directly find the memory address
-
+	// TODO disassemble ep->ExceptionRecord->ExceptionAddress to directly find the memory address
 	       if(ep->ContextRecord->Rax == target) {
 		ep->ContextRecord->Rax = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
 	} else if(ep->ContextRecord->Rbx == target) {
@@ -80,8 +80,6 @@ int filter(unsigned int code, struct _EXCEPTION_POINTERS *ep) {
 	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-garbage_collection::collector gc;
-
 struct my_object : garbage_collection::object {
 	virtual void hello_world() const {
 		std::cout << "Hello, World!" << std::endl;
@@ -94,7 +92,6 @@ struct my_object : garbage_collection::object {
 
 struct ambiguous_object : garbage_collection::object {
 	ambiguous_object(size_t parameter) : value(parameter) {
-		std::cout << "parameter: " << parameter << std::endl;
 	}
 
 	void foo() const {
@@ -102,7 +99,6 @@ struct ambiguous_object : garbage_collection::object {
 	}
 
 	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
-		std::cout << __FUNCSIG__ << std::endl;
 		garbage_collection::object::_gc_trace(visitor);
 	}
 
@@ -113,7 +109,6 @@ private:
 struct left : garbage_collection::object
 {
 	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
-		std::cout << __FUNCSIG__ << std::endl;
 		garbage_collection::object::_gc_trace(visitor);
 	}
 };
@@ -121,7 +116,6 @@ struct left : garbage_collection::object
 struct right : garbage_collection::object
 {
 	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
-		std::cout << __FUNCSIG__ << std::endl;
 		garbage_collection::object::_gc_trace(visitor);
 	}
 };
@@ -137,8 +131,8 @@ struct right : garbage_collection::object
 
 struct combined : left, right
 {
-	combined() : ao1(gc.gcnew<ambiguous_object>(10u)),
-	             ao2(gc.gcnew<ambiguous_object>(11u))
+	combined() : ao1(garbage_collection::gcnew<ambiguous_object>(10u)),
+	             ao2(garbage_collection::gcnew<ambiguous_object>(11u))
 	{
 		ao1->foo();
 		ao2->foo();
@@ -209,6 +203,28 @@ struct D3 : D1, D2 {
 	}
 };
 
+struct Node : garbage_collection::object {
+	DEFINE_GC_MEMBERS(
+		(garbage_collection::object),
+		(
+			(public, Node, next)
+		)
+	)
+};
+
+struct Nested : garbage_collection::object {
+	Nested() : children(garbage_collection::gcnew<Nested[]>(4)) {
+	}
+
+	DEFINE_GC_MEMBERS(
+		(garbage_collection::object),
+		(
+		(
+			public, Nested[], children)
+		)
+	)
+};
+
 //#include <variant>
 //#include <string_view>
 //#include <vector>
@@ -246,6 +262,7 @@ struct D3 : D1, D2 {
 
 int main() {
 	using namespace garbage_collection;
+#if 0
 	{
 		work_stealing_queue<void*> wsq;
 		wsq.push(nullptr);
@@ -283,7 +300,7 @@ int main() {
 			std::cout << x->val << std::endl;
 		}
 	}
-
+#endif
 	{
 		//arena arena;
 		//void* zero = arena.allocate(0);
@@ -297,49 +314,72 @@ int main() {
 		//arena.deallocate(one);
 		//arena.deallocate(zero);
 	}
-
+	the_gc.collect();
 	{
-		handle<my_object> obj = gc.gcnew<my_object>();
+		handle<my_object> obj = gcnew<my_object>();
 		obj->hello_world();
 		obj->hello_world();
 		handle<my_object> obj2(obj);
 		obj2->hello_world();
 		obj2->hello_world();
-		handle<ambiguous_object  > ao = gc.gcnew<ambiguous_object  >(3UL);
+		handle<ambiguous_object  > ao = gcnew<ambiguous_object  >(3UL);
 		ao->foo();
-		handle<ambiguous_object[]> ar1 = gc.gcnew<ambiguous_object[]>(4);
-		handle<ambiguous_object[]> ar2 = gc.gcnew<ambiguous_object[]>({ gc.gcnew<ambiguous_object>(5UL) });
+		handle<ambiguous_object[]> ar1 = gcnew<ambiguous_object[]>(4);
+		handle<ambiguous_object[]> ar2 = gcnew<ambiguous_object[]>({ gcnew<ambiguous_object>(5UL) });
 		ar2[0]->foo();
 	}
-
+	the_gc.collect();
 	{
-		handle<size_t[]          > sa1 = gc.gcnew<size_t[]>(1);
-		handle<size_t[]          > sa2 = gc.gcnew<size_t[]>({ 1, 2, 3, 4 });
+		handle<Node> first = gcnew<Node>();
+		handle<Node> second = gcnew<Node>();
+		first->next = second;
+		second->next = first;
+		first = nullptr;
+		second = nullptr;
+	}
+	the_gc.collect();
+	{
+		handle<Nested> n = gcnew<Nested>();
+		n->children = gcnew<Nested[]>(1);
+	}
+	the_gc.collect();
+	{
+		handle<Node> root = gcnew<Node>();
+		handle<Node> current = root;
+		for(size_t i = 0; i < 64; ++i) {
+			current->next = gcnew<Node>();
+			current = current->next;
+		}
+		current->next = root;
+		root = nullptr;
+	}
+	the_gc.collect();
+	{
+		handle<size_t[]> sa1 = gcnew<size_t[]>(1);
+		handle<size_t[]> sa2 = gcnew<size_t[]>({ 1, 2, 3, 4 });
 		std::cout << sa2[0] << std::endl;
 	}
 
 	{
-		handle<combined> c = gc.gcnew<combined>();
+		handle<combined> c = gcnew<combined>();
 		handle<left> l1 = c;
 		handle<left> l2(c);
 		handle<left> l3; l3 = c;
 
-		handle<combined> c2 = gc.gc_cast<combined>(l1);
-		handle<ambiguous_object> ao = gc.gcnew<ambiguous_object>(3UL);
-		handle<combined> c3 = gc.gc_cast<combined>(ao);
-
-		gc.mark();
+		handle<combined> c2 = gc_cast<combined>(l1);
+		handle<ambiguous_object> ao = gcnew<ambiguous_object>(3UL);
+		handle<combined> c3 = gc_cast<combined>(ao);
 	}
 
 	{
-		handle<D3> d3 = gc.gcnew<D3>();
+		handle<D3> d3 = gcnew<D3>();
 		handle<D1> d1 = d3;
 		handle<D2> d2 = d3;
 
 		handle<B> b1 = d1; // ok
 		handle<B> b2 = d2; // ok
 
-		handle<B> b3 = gc.gc_cast<B>(gc.gc_cast<D1>(d3));
+		handle<B> b3 = gc_cast<B>(gc_cast<D1>(d3));
 
 		std::cout << !!b1 << " " << !!b2 << std::endl;
 
@@ -351,8 +391,9 @@ int main() {
 	}
 
 	{
-		handle<D3> d3 = gc.gcnew<D3>();
+		handle<D3> d3 = gcnew<D3>();
 	}
+#if 0
 	{
 		handle<box<int>> b1 = gc.gcnew<box<int>>(1);
 		handle<int> b2 = gc.gcnew<int>(1);
@@ -371,6 +412,9 @@ int main() {
 		TEST(array<int>[1]);
 		TEST(array<int>[][1]);
 		TEST(array<int>[1][1]);
+		TEST(array<int[]>[]);
+		TEST(array<int[]>[1]);
+		TEST(array<int[1]>[1]);
 		TEST(array<array<int>>);
 		TEST(B[]);
 		TEST(array<B>);
@@ -382,7 +426,14 @@ int main() {
 
 		std::cout << typeid(handle<my_object>).name() << std::endl;
 		std::cout << typeid(handle<ambiguous_object>).name() << std::endl;
+
+		std::cout << sizeof(raw_reference) << std::endl;
+		std::cout << sizeof(handle<my_object>) << std::endl;
+		std::cout << sizeof(object) << std::endl;
 	}
+#endif
+	the_gc.collect();
+
 	return 0;
 
 	//segment_size.QuadPart = 1 << 30;

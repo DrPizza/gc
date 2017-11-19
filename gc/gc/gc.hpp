@@ -7,6 +7,10 @@
 #define _STL_EXTRA_DISABLED_WARNINGS 4061 4623 4365 4571 4625 4626 4710 4820 4987 5026 5027
 #endif
 
+#if !defined(_SCL_SECURE_NO_WARNINGS)
+#define _SCL_SECURE_NO_WARNINGS 1
+#endif
+
 #include <cstddef>
 #include <new>
 #include <cassert>
@@ -23,12 +27,12 @@
 #include <thread>
 #include <tuple>
 #include <map>
+#include <set>
 #include <typeinfo>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
-
-#include "lock.hpp"
 
 #pragma warning(disable: 4324) // warning C4234: structure was padded due to alignment specifier
 #pragma warning(disable: 4625) // warning C4625: '%s': copy constructor was implicitly defined as deleted
@@ -38,19 +42,17 @@
 #pragma warning(disable: 5026) // warning C5026: '%s': move constructor was implicitly defined as deleted
 #pragma warning(disable: 5027) // warning C5027: '%s': move assignment operator was implicitly defined as deleted
 
-#pragma warning(push)
+#pragma warning(disable: 26412) // warning C26412: Do not dereference an invalid pointer (lifetimes rule 1). 'return of %s' was invalidated at line %d by 'no initialization'.
+#pragma warning(disable: 26481) // warning C26481: Don't use pointer arithmetic. Use span instead. (bounds.1: http://go.microsoft.com/fwlink/p/?LinkID=620413)
+#pragma warning(disable: 26485) // warning C26485: Expression '%s::`vbtable'': No array to pointer decay. (bounds.3: http://go.microsoft.com/fwlink/p/?LinkID=620415)
+#pragma warning(disable: 26490) // warning C26490: Don't use reinterpret_cast. (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417)
+#pragma warning(disable: 26499) // warning C26499: Could not find any lifetime tracking information for '%s'
 
-#pragma warning(disable: 4365) // warning C4365: '%s': conversion from '%s' to '%s', signed/unsigned mismatch
-#pragma warning(disable: 4464) // warning C4464: relative include path contains '..'
-#pragma warning(disable: 4574) // warning C4574: '%s' is defined to be '%s': did you mean to use '#if %s'?
+#include <gsl/gsl>
 
-//
-//#include <tbb/concurrent_queue.h>
-//#include <tbb/enumerable_thread_specific.h>
-//
-//#include <ppl.h>
-
-#pragma warning(pop)
+//#pragma warning(disable: 4365) // warning C4365: '%s': conversion from '%s' to '%s', signed/unsigned mismatch
+//#pragma warning(disable: 4464) // warning C4464: relative include path contains '..'
+//#pragma warning(disable: 4574) // warning C4574: '%s' is defined to be '%s': did you mean to use '#if %s'?
 
 #pragma pointers_to_members(full_generality, virtual_inheritance)  
 
@@ -72,16 +74,16 @@ namespace garbage_collection
 			size_t    page_number    : 28;
 			size_t    generation     : 2;
 			size_t    seen_by_marker : 2;
-			ptrdiff_t typed_offset   : 12; // where to find the start of the typed object, relative to the address of the object_base, in void*s
+			ptrdiff_t typed_offset   : 12; // where to find the start of the typed object, relative to the address of the object_base, in void*s.
+			                               // this limits objects to 2^15 bytes. the C++ spec requires at least 2^18. maybe find some extra bits.
 		} address;
 		// used by object_base to track ref counts, mark status, whether the destructor has been called
 		struct
 		{
 			size_t raw_address       : 56;
-			size_t colour            : 2;
 			size_t relocate          : 2;  // 0 = resident, 1 = moving, 2 = moved
 			size_t reference_count   : 3;  // 0-6 = rced, 7 = gced
-			size_t destructed        : 1;
+			size_t unused            : 3;
 		} header;
 		struct
 		{
@@ -106,15 +108,8 @@ namespace garbage_collection
 			old = 2,
 			max_arenas = 3,
 		};
-		enum
-		{
-			white_or_black = 0, // black: reachable and scanned
-			black_or_white = 1, // white: unreachable and scanned
-			grey           = 2, // grey:  reachable and unscanned
-			free           = 3  // free:  already reclaimed (e.g. by ref-count)
-		};
 
-		static gc_bits _gc_build_reference(collector* the_gc, arena* the_arena, object_base* memory, ptrdiff_t typed_offset);
+		static gc_bits _gc_build_reference(object_base* base_pointer, void* typed_pointer);
 
 		static const gc_bits zero;
 	};
@@ -170,7 +165,7 @@ namespace garbage_collection
 
 	template<typename T, bool InArray>
 	struct normalize {
-		using type = std::conditional_t<std::is_base_of_v<object_base, T>,
+		using type = std::conditional_t<std::is_convertible_v<T*, object_base*>,
 		                                T,
 		                                std::conditional_t<InArray, T, box<T>>
 		>;
@@ -239,181 +234,338 @@ namespace garbage_collection
 
 		static constexpr size_t maximum_alignment = 512 / CHAR_BIT; // AVX512 alignment is the worst we're ever likely to see
 		static_assert(is_power_of_two(maximum_alignment), "maximum_alignment isn't a power of two");
-		static constexpr size_t maximum_alignment_shift = 0; // log2(maximum_alignment);
 
 		struct allocation_header {
 			std::atomic<size_t> allocated_size;
 			ptrdiff_t object_offset;
 		};
 
-		void* allocate(size_t amount);
-
+		[[nodiscard]] void* allocate(size_t amount);
 		void deallocate(void* region);
-		bool is_protected(const gc_bits location) const;
+		[[nodiscard]] bool is_protected(const gc_bits location) const;
 
 		size_t approximately_available() const noexcept {
 			return size - (high_watermark.load(std::memory_order_relaxed) - low_watermark.load(std::memory_order_relaxed));
 		}
 
-		gc_bits get_new_location(const gc_bits old_location) const noexcept {
+		[[nodiscard]] gc_bits get_new_location(const gc_bits old_location) const noexcept {
 			// TODO
 			return old_location;
 		}
 
-		allocation_header* get_header(void* block) const noexcept {
-			byte* region = static_cast<byte*>(block);
-			allocation_header* header = reinterpret_cast<allocation_header*>(region - sizeof(allocation_header));
+		[[nodiscard]] allocation_header* get_header(void* const block) const noexcept {
+			allocation_header* const header = reinterpret_cast<allocation_header*>(static_cast<byte*>(block) - sizeof(allocation_header));
 			return header;
 		}
 
-		size_t get_block_size(void* block) const noexcept {
-			allocation_header* header = get_header(block);
+		[[nodiscard]] size_t get_block_size(void* const block) const noexcept {
+			const allocation_header* const header = get_header(block);
 			return header->allocated_size.load(std::memory_order_acquire);
 		}
 
-		void* _gc_resolve(const gc_bits location) const noexcept {
+		[[nodiscard]] void* offset_to_pointer(size_t offset) const noexcept {
+			return base + offset;
+		}
+
+		[[nodiscard]] size_t pointer_to_offset(const void* const location) const noexcept {
+			if(location == nullptr) {
+				return 0ui64;
+			}
+			return static_cast<size_t>(static_cast<const byte*>(location) - base);
+		}
+
+		[[nodiscard]] void* bits_to_pointer(const gc_bits location) const noexcept {
 			if(location.raw.pointer == 0) {
 				return nullptr;
 			}
-			const size_t offset = (location.address.page_number * page_size) + (location.address.page_offset << maximum_alignment_shift);
-			return base + offset;
+			const size_t offset = (location.address.page_number * page_size) + location.address.page_offset;
+			return offset_to_pointer(offset);
 		}
 	
-		gc_bits _gc_unresolve(const void* location) const noexcept {
-			if(location == nullptr) {
-				return gc_bits{ 0 };
-			}
-			const size_t offset = static_cast<size_t>(static_cast<const byte*>(location) - base);
-			
-			//assert(offset % maximum_alignment == 0);
-
+		[[nodiscard]] gc_bits pointer_to_bits(const void* const location) const noexcept {
+			const size_t offset = pointer_to_offset(location);
 			gc_bits value = { 0 };
 			value.address.page_number = offset / page_size;
-			value.address.page_offset = (offset % page_size) >> maximum_alignment_shift;
+			value.address.page_offset = offset % page_size;
 			return value;
 		}
 	};
 
 	struct bit_table
 	{
-		bit_table(arena* the_arena_, size_t size_) : the_arena(the_arena_), size((size_ / arena::maximum_alignment) / CHAR_BIT), bits(new std::atomic<uint8_t>[size]) {
+		using element = uint8_t;
+		static constexpr size_t element_bits = sizeof(element) * CHAR_BIT;
 
+		bit_table(size_t size_) : size((size_ / arena::maximum_alignment) / element_bits), bits(std::make_unique<std::atomic<element>[]>(size)) {
+			std::memset(bits.get(), 0, size * sizeof(element));
 		}
 
-		uint8_t set_bit(void* address) {
-			std::pair<size_t, uint8_t> position = get_bit_position(address);
-			uint8_t mask = static_cast<uint8_t>(1ui8 << position.second);
-			uint8_t orig = bits[position.first].fetch_or(mask, std::memory_order_release);
-			return static_cast<uint8_t>((orig & mask) >> position.second);
+		bool set_bit(size_t offset) {
+			const std::pair<size_t, uint8_t> position = offset_to_bit_position(offset);
+			const element mask = static_cast<element>(1u << position.second);
+			const element orig = bits[position.first].fetch_or(mask, std::memory_order_release);
+			return 1u == static_cast<element>((orig & mask) >> position.second);
 		}
 
-		uint8_t clear_bit(void* address) {
-			std::pair<size_t, uint8_t> position = get_bit_position(address);
-			uint8_t mask = static_cast<uint8_t>(1ui8 << position.second);
-			uint8_t orig = bits[position.first].fetch_and(static_cast<uint8_t>(~mask), std::memory_order_release);
-			return static_cast<uint8_t>((orig & mask) >> position.second);
+		bool clear_bit(size_t offset) {
+			const std::pair<size_t, uint8_t> position = offset_to_bit_position(offset);
+			const element mask = static_cast<element>(1u << position.second);
+			const element orig = bits[position.first].fetch_and(static_cast<element>(~mask), std::memory_order_release);
+			return 1u == static_cast<element>((orig & mask) >> position.second);
 		}
 
-		bool query_bit(void* address) {
-			std::pair<size_t, uint8_t> position = get_bit_position(address);
-			return 1ui8 == ((bits[position.first].load(std::memory_order_relaxed) >> position.second) & 1ui8);
+		[[nodiscard]] bool query_bit(size_t offset) {
+			const std::pair<size_t, uint8_t> position = offset_to_bit_position(offset);
+			return 1u == ((bits[position.first].load(std::memory_order_relaxed) >> position.second) & 1u);
 		}
 
 		void reset() {
-			for(size_t i = 0; i < size; ++i) {
-				bits[i].store(0ui8, std::memory_order_relaxed);
+			bits = std::make_unique<std::atomic<element>[]>(size);
+			std::memset(bits.get(), 0, size * sizeof(std::atomic<element>));
+		}
+
+		[[nodiscard]] static std::pair<size_t, uint8_t> offset_to_bit_position(size_t offset) {
+			const size_t block_number = offset / arena::maximum_alignment;
+			const size_t byte_number = block_number / element_bits;
+			const uint8_t bit_number = block_number % element_bits;
+			return { byte_number, bit_number };
+		}
+
+		[[nodiscard]] static size_t bit_position_to_offset(size_t byte_number, size_t bit_number) {
+			const size_t block_number = (byte_number * element_bits) + bit_number;
+			return block_number * arena::maximum_alignment;
+		}
+
+		void visualize() const {
+			for(size_t i = 0; i < arena::page_size / arena::maximum_alignment / element_bits; ++i) {
+				for(size_t j = 0; j < element_bits; ++j) {
+					std::cout << ((bits[i] & (1 << j)) == 0 ? 0 : 1);
+				}
+			}
+			std::cout << std::endl;
+		}
+
+		size_t size;
+		std::unique_ptr<std::atomic<element /*std::byte*/>[]> bits;
+	};
+
+	struct reference_registry
+	{
+		using registration = std::tuple<raw_reference*, object_base*>;
+
+		void register_reference(raw_reference* ref, object_base* obj) {
+			if(ref != nullptr) {
+				std::lock_guard<std::mutex> guard(references_mtx);
+				references[ref] = obj;
 			}
 		}
 
-		std::pair<size_t, uint8_t> get_bit_position(void* address);
+		void unregister_reference(raw_reference* ref) {
+			if(ref != nullptr) {
+				std::lock_guard<std::mutex> guard(references_mtx);
+				references.erase(ref);
+			}
+		}
 
-		arena* the_arena;
-		size_t size;
-		std::unique_ptr<std::atomic<uint8_t /*std::byte*/>[]> bits;
+		[[nodiscard]] virtual std::vector<registration> get_snapshot() {
+			std::lock_guard<std::mutex> guard(references_mtx);
+			std::vector<registration> snapshot;
+			std::transform(references.begin(), references.end(), std::back_inserter(snapshot), [](auto p) { return std::make_tuple(p.first, p.second); });
+			return snapshot;
+		}
+
+		virtual ~reference_registry() {
+		}
+
+	//private:
+		std::mutex references_mtx;
+		std::map<raw_reference*, object_base*> references;
+	};
+
+	struct thread_data : reference_registry {
+		thread_data();
+		thread_data(const thread_data&) = delete;
+		~thread_data();
+
+		// create one of these whenever we might have unprotected references on the stack
+		struct [[nodiscard]] guard_unsafe {
+			guard_unsafe(thread_data* td_) : td(td_) {
+				td->enter_unsafe();
+			}
+
+			guard_unsafe(guard_unsafe&& rhs) : td(rhs.td) {
+				rhs.td = nullptr;
+			}
+
+			guard_unsafe() = delete;
+			guard_unsafe(const guard_unsafe&) = delete;
+			guard_unsafe& operator=(const guard_unsafe&) = delete;
+
+			~guard_unsafe() {
+				if(td) {
+					td->leave_unsafe();
+				}
+			}
+
+		private:
+			thread_data* td;
+		};
+
+		guard_unsafe make_guard() {
+			return guard_unsafe(this);
+		}
+
+		[[nodiscard]] virtual std::vector<registration> get_snapshot() {
+			std::lock_guard<std::recursive_mutex> guard(unsafe);
+			std::vector<registration> snapshot = reference_registry::get_snapshot();
+			for(registration& reg : snapshot) {
+				std::get<0>(reg) = nullptr;
+			}
+			return snapshot;
+		}
+
+	private:
+		void enter_unsafe() {
+			unsafe.lock();
+		}
+
+		void leave_unsafe() {
+			unsafe.unlock();
+		}
+
+		std::recursive_mutex unsafe;
+	};
+
+	extern thread_local thread_data this_thread_data;
+
+	struct global_data : reference_registry
+	{
 	};
 
 	struct collector
 	{
-		collector(size_t size_ = 1ui64 << 30) : the_arena(size_), reachables(&the_arena, size_), allocateds(&the_arena, size_) {
+		collector(size_t size_ = 1ui64 << 30) : the_arena(size_), reachables(size_), allocateds(size_), usage(size_) {
 		}
 
 		template<typename T, typename... Args>
-		std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
 		template<typename T>
-		std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
 		template<typename T>
-		std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
-		template<typename To, typename From>
-		handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
-	//protected:
+		void collect();
+
+	protected:
 		friend struct raw_reference;
+		template<typename T>
+		friend struct handle_t;
+		template<typename T>
+		friend struct global_t;
+		friend struct marker;
+		friend struct thread_data;
 		friend union gc_bits;
 
 		void queue_object(object_base*);
 
-		void collect();
-
 		void mark();
 
-		void relocate() {
+		void update_usage(const void* const addr, size_t object_size);
 
-		}
+		void relocate(size_t bottom, size_t top);
 
 		void remap() {
 
 		}
 
-		void finalize() {
+		void finalize(size_t bottom, size_t top);
 
-		}
+		void shrink(size_t bottom, size_t top);
 
 		arena the_arena;
 
 		std::atomic<size_t> current_marker_phase;
-		std::atomic<size_t> condemned_colour;
-		std::atomic<size_t> scanned_colour;
 
 	protected:
-		bool is_marked_reachable(void* address) {
-			return reachables.query_bit(address);
+		void register_mutator_thread(thread_data* data) {
+			std::scoped_lock<std::mutex> rw_lock(thread_lock);
+			mutator_threads[std::this_thread::get_id()] = data;
 		}
 
-		void mark_reachable(void* address) {
-			reachables.set_bit(address);
+		void unregister_mutator_thread() {
+			std::scoped_lock<std::mutex> rw_lock(thread_lock);
+			mutator_threads.erase(std::this_thread::get_id());
 		}
 
-		void mark_allocated(void* address) {
-			allocateds.set_bit(address);
+	protected:
+		bool is_marked_reachable(const void* const address) {
+			return reachables.query_bit(the_arena.pointer_to_offset(address));
+		}
+
+		bool is_marked_allocated(const void* const address) {
+			return allocateds.query_bit(the_arena.pointer_to_offset(address));
+		}
+
+		void mark_reachable(void* const address) {
+			const arena::allocation_header* const header = the_arena.get_header(address);
+			size_t object_size = header->allocated_size;
+			update_usage(address, object_size);
+			size_t offset = the_arena.pointer_to_offset(address);
+			reachables.set_bit(offset);
+			usage.set_bit(offset);
+			while(object_size > arena::maximum_alignment) {
+				offset += arena::maximum_alignment;
+				usage.set_bit(offset);
+				object_size -= arena::maximum_alignment;
+			}
+		}
+
+		void mark_allocated(const void* const address) {
+			allocateds.set_bit(the_arena.pointer_to_offset(address));
+		}
+
+		bool mark_destroyed(const void* const address) {
+			return allocateds.clear_bit(the_arena.pointer_to_offset(address));
 		}
 
 	private:
 		friend struct object_base;
 		friend struct marker;
 
-		using root_set = std::vector<object_base*>;
+		using registration = std::tuple<raw_reference*, object_base*>;
+		using root_set = std::vector<registration>;
+		using mark_queue = std::unordered_set<object_base*>;
 
 		void flip();
 
-		void scan_roots();
+		root_set scan_roots();
 
-		using mark_queue = void;
+		std::mutex thread_lock;
+		std::unordered_map<std::thread::id, thread_data*> mutator_threads;
+		global_data globals;
+		
+		std::mutex mutated_lock;
+		mark_queue mutated_objects;
 
 		bit_table reachables;
 		bit_table allocateds;
+		bit_table usage;
+		std::unique_ptr<std::atomic<uint16_t>[]> page_allocations;
 	};
 
-	inline std::pair<size_t, uint8_t> bit_table::get_bit_position(void* addr) {
-		assert(addr != nullptr);
-		const gc_bits offset = the_arena->_gc_unresolve(addr);
-		const size_t block_number = offset.raw.pointer / (arena::maximum_alignment / CHAR_BIT);
-		const size_t byte_number = block_number / CHAR_BIT;
-		const uint8_t bit_number = block_number % CHAR_BIT;
-		return { byte_number, bit_number };
+	extern collector the_gc;
+
+	inline thread_data::thread_data() {
+		the_gc.register_mutator_thread(this);
 	}
 
-	struct marker : visitor {
-		marker(collector* the_gc_, arena* the_arena_) : the_gc(the_gc_), the_arena(the_arena_) {
+	inline thread_data::~thread_data() {
+		the_gc.unregister_mutator_thread();
+	}
+
+	struct marker : visitor
+	{
+		marker(collector* the_gc_) : the_gc(the_gc_) {
 		}
 
 		virtual void trace(const raw_reference* ref) override;
@@ -422,10 +574,10 @@ namespace garbage_collection
 
 	private:
 		collector* the_gc;
-		arena* the_arena;
 	};
 
-	struct nuller : visitor {
+	struct nuller : visitor
+	{
 		virtual void trace(const raw_reference* ref) override;
 		using visitor::trace;
 	};
@@ -433,7 +585,7 @@ namespace garbage_collection
 	struct object_base
 	{
 		object_base() noexcept {
-			gc_bits bits = count.load(std::memory_order_acquire);
+			gc_bits bits = { 0 };
 			bits.header.reference_count = 1;
 			count.store(bits, std::memory_order_release);
 		}
@@ -454,43 +606,27 @@ namespace garbage_collection
 		virtual void _gc_trace(visitor*) const = 0;
 
 		static void guarded_destruct(const object_base* obj) {
-			for(;;) {
-				// some casual UB here: we read from a potentially-already-destructed object.
-				// we know that the destructor leaves the object in a valid/meaningful state.
-				// we could in principle use a 'finalize' method and never call the real d-tor,
-				// but that's tedious to plumb into every subobject properly. We want the 
-				// automatic destruction of child objects etc, which only the real destructor
-				// gives us. This is important because as often as possible, we want members
-				// to use ref-count rather than full GC.
-				gc_bits original = obj->count.load(std::memory_order_acquire);
-				if(original.header.destructed) {
-					return;
-				}
-				gc_bits updated = original;
-				updated.header.destructed = 1;
-				if(obj->count.compare_exchange_strong(original, updated, std::memory_order_release)) {
-					nuller n;
-					obj->_gc_trace(&n);
-					obj->~object_base();
-					return;
-				}
+			if(the_gc.mark_destroyed(obj->_gc_get_block())) {
+				nuller n;
+				obj->_gc_trace(&n);
+				obj->~object_base();
+				return;
 			}
 		}
 
 	protected:
-		void _gc_set_block_unsafe(collector* the_gc, arena* the_arena, void* addr, object_base* obj) noexcept {
-			gc_bits location = the_arena->_gc_unresolve(addr);
+		void _gc_set_block_unsafe(void* addr, object_base* obj) noexcept {
+			const gc_bits location = the_gc.the_arena.pointer_to_bits(addr);
 			gc_bits current = count.load(std::memory_order_acquire);
 			current.header.raw_address = location.header.raw_address;
 			count.store(current, std::memory_order_release);
 
-			the_gc->mark_allocated(addr);
-			the_arena->get_header(addr)->object_offset = reinterpret_cast<byte*>(obj) - reinterpret_cast<byte*>(addr);
+			the_gc.the_arena.get_header(addr)->object_offset = reinterpret_cast<byte*>(obj) - static_cast<byte*>(addr);
 		}
 
-		void* _gc_get_block(arena* the_arena) const noexcept {
-			gc_bits location = count.load(std::memory_order_acquire);
-			return the_arena->_gc_resolve(location);
+		void* _gc_get_block() const noexcept {
+			const gc_bits location = count.load(std::memory_order_acquire);
+			return the_gc.the_arena.bits_to_pointer(location);
 		}
 
 	private:
@@ -499,6 +635,14 @@ namespace garbage_collection
 		friend struct collector;
 		friend struct marker;
 		friend struct raw_reference;
+		template<typename To, typename From>
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
+		template<typename T, typename... Args>
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
 		size_t _gc_add_ref() const noexcept {
 			for(;;) {
@@ -523,11 +667,8 @@ namespace garbage_collection
 				gc_bits new_value = current;
 				--new_value.header.reference_count;
 				if(count.compare_exchange_strong(current, new_value)) {
-
 					if(current.header.reference_count == 1) {
-						//void* block = this->_gc_get_block();
 						object_base::guarded_destruct(this);
-						//the_gc.the_arena.deallocate(block);
 					}
 					return new_value.header.reference_count;
 				}
@@ -543,29 +684,23 @@ namespace garbage_collection
 
 	template<typename T>
 	struct
-	alignas(std::conditional_t<std::is_base_of_v<object, T>, reference_t<T>, T>)
+	alignas(std::conditional_t<std::is_convertible_v<T*, object_base*>, reference_t<T>, T>)
 	alignas(object)
 	array final : object
 	{
 		friend struct collector;
 
-		using element_type = std::conditional_t<std::is_base_of_v<object, T>, reference_t<T>, T>;
+		using element_type = std::conditional_t<std::is_convertible_v<T*, object_base*>, reference_t<T>, T>;
 
 		array() = delete;
 		array(const array&) = delete;
 
 		explicit array(size_t length_) noexcept(std::is_nothrow_constructible_v<element_type>) : len(length_) {
-			element_type* elts = elements();
-			for(size_t i = 0; i < len; ++i) {
-				new(&elts[i]) element_type();
-			}
+			std::uninitialized_value_construct_n(elements(), len);
 		}
 	
 		explicit array(std::initializer_list<element_type> init) noexcept(std::is_nothrow_copy_constructible_v<element_type>) : len(init.size()) {
-			size_t offset = 0;
-			for(const element_type& e : init) {
-				new(&(elements()[offset++])) element_type(e);
-			}
+			std::uninitialized_copy(init.begin(), init.end(), elements());
 		}
 
 		element_type& operator[](size_t offset) {
@@ -587,7 +722,7 @@ namespace garbage_collection
 		}
 
 		virtual void _gc_trace(visitor* v) const override {
-			if constexpr(std::is_base_of_v<object, T>) {
+			if constexpr(std::is_convertible_v<T*, object_base*>) {
 				const element_type* es = elements();
 				for(size_t i = 0; i < len; ++i) {
 					if(es[i]) {
@@ -599,6 +734,11 @@ namespace garbage_collection
 		}
 
 	private:
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
+
 		static size_t allocation_size(size_t len) {
 			return sizeof(array<T>) + (len * sizeof(element_type));
 		}
@@ -616,14 +756,15 @@ namespace garbage_collection
 	};
 
 	template<typename T>
-	struct box final : object {
-		using element_type = std::conditional_t<std::is_base_of_v<object, T>, reference_t<T>, T>;
+	struct box final : object
+	{
+		using element_type = std::conditional_t<std::is_convertible_v<T*, object_base*>, reference_t<T>, T>;
 
 		box(const element_type& e) noexcept(std::is_nothrow_copy_constructible_v<element_type>) : val(e) {
 		}
 
 		virtual void _gc_trace(visitor* v) const override {
-			if constexpr(std::is_base_of_v<object, T>) {
+			if constexpr(std::is_convertible_v<T*, object_base*>) {
 				v->trace(val);
 			}
 			return object::_gc_trace(v);
@@ -648,7 +789,7 @@ namespace garbage_collection
 		}
 
 		bool operator==(const raw_reference& rhs) const noexcept {
-			return (the_gc == rhs.the_gc && pointer.load().raw.pointer == rhs.pointer.load().raw.pointer) ||
+			return pointer.load().raw.pointer == rhs.pointer.load().raw.pointer ||
 			       _gc_resolve_base() == rhs._gc_resolve_base();
 		}
 
@@ -656,11 +797,16 @@ namespace garbage_collection
 			return !(*this == rhs);
 		}
 
-	protected:
-		raw_reference() noexcept : the_gc(nullptr), the_arena(nullptr), pointer() {
+		raw_reference& operator=(std::nullptr_t) noexcept {
+			clear();
+			return *this;
 		}
 
-		raw_reference(std::nullptr_t) noexcept : the_gc(nullptr), the_arena(nullptr), pointer() {
+	protected:
+		raw_reference() noexcept : pointer() {
+		}
+
+		raw_reference(std::nullptr_t) noexcept : pointer() {
 		}
 
 		raw_reference(const raw_reference& rhs) noexcept {
@@ -675,51 +821,52 @@ namespace garbage_collection
 			return *this;
 		}
 
-		raw_reference& operator=(std::nullptr_t) noexcept {
-			clear();
-			return *this;
-		}
-
 		virtual void assign(const raw_reference& rhs) noexcept {
-			if(object_base* obj = rhs._gc_resolve_base()) {
+			if(const object_base* const obj = rhs._gc_resolve_base()) {
 				obj->_gc_add_ref();
 			}
 			_gc_write_barrier();
-			the_gc = rhs.the_gc;
-			the_arena = rhs.the_arena;
 			pointer.store(rhs.pointer.load(std::memory_order_acquire));
 		}
 
 		virtual void clear() noexcept {
-			if(object_base* obj = _gc_resolve_base()) {
+			if(const object_base* const obj = _gc_resolve_base_no_queue()) {
 				obj->_gc_del_ref();
 			}
 			pointer.store(gc_bits::zero, std::memory_order_release);
-			the_arena = nullptr;
-			the_gc = nullptr;
 		}
 
 		virtual ~raw_reference() noexcept {
 			clear();
 		}
 
-		void* _gc_resolve() const noexcept {
+		// use this exclusively when a reference is being destroyed
+		object_base* _gc_resolve_base_no_queue() const noexcept {
 			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
 				return nullptr;
 			}
-			gc_bits value = _gc_read_barrier();
-			object_base* ob = reinterpret_cast<object_base*>(the_arena->_gc_resolve(value));
-			byte* derived_object = reinterpret_cast<byte*>(ob) + (value.address.typed_offset * static_cast<ptrdiff_t>(sizeof(void*)));
-			return derived_object;
+			const gc_bits value = _gc_read_barrier_no_queue();
+			object_base* ob = static_cast<object_base*>(the_gc.the_arena.bits_to_pointer(value));
+			return ob;
 		}
 
 		object_base* _gc_resolve_base() const noexcept {
 			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
 				return nullptr;
 			}
-			gc_bits value = _gc_read_barrier();
-			object_base* ob = reinterpret_cast<object_base*>(the_arena->_gc_resolve(value));
+			const gc_bits value = _gc_read_barrier();
+			object_base* ob = static_cast<object_base*>(the_gc.the_arena.bits_to_pointer(value));
 			return ob;
+		}
+
+		void* _gc_resolve() const noexcept {
+			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
+				return nullptr;
+			}
+			const gc_bits value = _gc_read_barrier();
+			object_base* ob = _gc_resolve_base();
+			byte* derived_object = reinterpret_cast<byte*>(ob) + (value.address.typed_offset * static_cast<ptrdiff_t>(sizeof(void*)));
+			return derived_object;
 		}
 
 		void _gc_write_barrier() const noexcept {
@@ -728,177 +875,89 @@ namespace garbage_collection
 			// maybe I can judge based on the location of 'this'
 		}
 
-		gc_bits _gc_read_barrier() const noexcept {
+		gc_bits _gc_read_barrier_no_queue() const noexcept {
 			gc_bits value = pointer.load();
-			bool nmt_changed = false;
-			if(value.address.seen_by_marker != the_gc->current_marker_phase) {
-				nmt_changed = true;
-			}
 			bool relocated = false;
-			if(the_arena->is_protected(value)) {
+			if(the_gc.the_arena.is_protected(value)) {
 				relocated = true;
 			}
-			if(nmt_changed || relocated) {
-				value = _gc_load_barrier_fix(value, nmt_changed, relocated);
+			if(relocated) {
+				value = _gc_load_barrier_fix(value, false, relocated);
 			}
 			return value;
 		}
 
-		gc_bits _gc_load_barrier_fix(gc_bits value, bool nmt_changed, bool relocated) const noexcept {
-			gc_bits old_value = value;
-			if(nmt_changed) {
-				value.address.seen_by_marker = the_gc->current_marker_phase;
-				object_base* ob = reinterpret_cast<object_base*>(the_arena->_gc_resolve(value));
-				the_gc->queue_object(ob);
+		gc_bits _gc_read_barrier() const noexcept {
+			gc_bits value = pointer.load();
+			bool marker_phase_changed = false;
+			if(value.address.seen_by_marker != the_gc.current_marker_phase) {
+				marker_phase_changed = true;
 			}
-			if(relocated) {
-				if(value.header.relocate != gc_bits::moved) {
-					// TODO perform relocate
-				}
-				// forwarded address stored in the corpse of the old object
-				object_base* ob = reinterpret_cast<object_base*>(the_arena->_gc_resolve(value));
-				gc_bits relocated_location = ob->count.load(std::memory_order_acquire);
-				value.address.page_number = relocated_location.address.page_number;
-				value.address.page_offset = relocated_location.address.page_offset;
+			bool relocated = false;
+			if(the_gc.the_arena.is_protected(value)) {
+				relocated = true;
 			}
-			pointer.compare_exchange_strong(old_value, value, std::memory_order_release);
+			if(marker_phase_changed || relocated) {
+				value = _gc_load_barrier_fix(value, marker_phase_changed, relocated);
+			}
 			return value;
+		}
+
+		gc_bits _gc_load_barrier_fix(gc_bits old_value, bool marker_phase_changed, bool relocated) const noexcept {
+			object_base* ob = static_cast<object_base*>(the_gc.the_arena.bits_to_pointer(old_value));
+			if(marker_phase_changed) {
+				the_gc.queue_object(ob);
+			}
+			for(;;) {
+				gc_bits new_value = old_value;
+				if(marker_phase_changed) {
+					new_value.address.seen_by_marker = the_gc.current_marker_phase;
+				}
+				if(relocated) {
+					if(old_value.header.relocate != gc_bits::moved) {
+						// TODO perform relocate
+					}
+					// forwarded address stored in the corpse of the old object
+					gc_bits relocated_location = ob->count.load(std::memory_order_acquire);
+					new_value.address.page_number = relocated_location.address.page_number;
+					new_value.address.page_offset = relocated_location.address.page_offset;
+				}
+				if(pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
+					return new_value;
+				}
+			}
 		}
 
 	private:
 		friend struct marker;
-		friend struct nuller;
 
 		template<typename T>
 		friend struct reference_t;
+		template<typename T>
+		friend struct handle_t;
+		template<typename T>
+		friend struct global_t;
 
-		raw_reference(collector* the_gc_, arena* the_arena_, gc_bits bits) noexcept : the_gc(the_gc_), the_arena(the_arena_), pointer(bits) {
+		template<typename To, typename From>
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
+		template<typename T, typename... Args>
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
+
+		raw_reference(gc_bits bits) noexcept : pointer(bits) {
 		}
 
-		collector* the_gc;
-		arena* the_arena;
 		mutable gc_pointer pointer;
 	};
-
-	struct reference_registry
-	{
-		using registration = std::tuple<raw_reference*, object_base*>;
-
-		void register_reference(raw_reference* ref, object_base* obj) {
-			if(ref != nullptr) {
-				std::lock_guard<std::mutex> guard(references_mtx);
-				references[ref] = obj;
-			}
-		}
-	
-		void unregister_reference(raw_reference* ref) {
-			if(ref != nullptr) {
-				std::lock_guard<std::mutex> guard(references_mtx);
-				references.erase(ref);
-			}
-		}
-
-		virtual std::vector<registration> get_snapshot() {
-			std::lock_guard<std::mutex> guard(references_mtx);
-			std::vector<registration> snapshot;
-			std::transform(references.begin(), references.end(), std::back_inserter(snapshot), [](auto p) { return std::make_tuple(p.first, p.second); });
-			return snapshot;
-		}
-
-		virtual ~reference_registry() {
-		}
-
-	private:
-
-		std::mutex references_mtx;
-		std::map<raw_reference*, object_base*> references;
-	};
-
-	struct thread_data;
-
-	struct global_data : reference_registry {
-		void register_mutator_thread(thread_data* data) {
-			gc_lock l(spinlock);
-			mutator_threads[std::this_thread::get_id()] = data;
-		}
-
-		void unregister_mutator_thread() {
-			gc_lock l(spinlock);
-			mutator_threads.erase(std::this_thread::get_id());
-		}
-
-	private:
-		gc_spinlock spinlock;
-		std::unordered_map<std::thread::id, thread_data*> mutator_threads;
-
-		std::vector<raw_reference*> globals;
-		std::vector<raw_reference*> statics;
-	};
-
-	extern global_data globals;
-
-	extern thread_local thread_data this_gc_thread;
-	
-	struct thread_data : reference_registry {
-		thread_data() : is_mutator_thread(true) {
-			globals.register_mutator_thread(this);
-		}
-
-		~thread_data() {
-			if(is_mutator_thread) {
-				globals.unregister_mutator_thread();
-			}
-		}
-
-		thread_data(const thread_data&) = delete;
-
-		// create one of these whenever we might have a reference that needs tracking
-		// but which is currently not tracked
-		struct guard_unsafe {
-			guard_unsafe() {
-				this_gc_thread.enter_unsafe();
-			}
-
-			~guard_unsafe() {
-				this_gc_thread.leave_unsafe();
-			}
-		};
-
-		virtual std::vector<registration> get_snapshot() {
-			std::lock_guard<std::recursive_mutex> guard(unsafe);
-			std::vector<registration> snapshot = reference_registry::get_snapshot();
-			for(registration& reg : snapshot) {
-				std::get<0>(reg) = nullptr;
-			}
-			return snapshot;
-		}
-
-		void set_as_gc_thread() {
-			globals.unregister_mutator_thread();
-			is_mutator_thread = false;
-		}
-
-	private:
-		void enter_unsafe() {
-			unsafe.lock();
-		}
-
-		void leave_unsafe() {
-			unsafe.unlock();
-		}
-
-		std::recursive_mutex unsafe;
-
-		bool is_mutator_thread;
-	};
-
-	extern thread_local thread_data this_gc_thread;
 
 	// a typed GCed reference
 	template<typename T>
 	struct reference_t : raw_reference
 	{
-		static_assert(std::is_base_of_v<object, T>, "T must be derived from object");
+		static_assert(std::is_convertible_v<T*, object_base*>, "T must be derived from object");
 
 		using referenced_type = T;
 
@@ -911,18 +970,20 @@ namespace garbage_collection
 		reference_t(std::nullptr_t) noexcept : base_type(nullptr) {
 		}
 
-		reference_t(const my_type& rhs) noexcept : base_type(rhs) {
+		reference_t(const my_type& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
 		}
 
-		template<typename U, typename = std::enable_if_t<(std::is_base_of_v<T, U> && std::is_convertible_v<U*, T*>)|| (is_array_v<T> && std::is_same_v<T, U>) > >
-		reference_t(const reference_t<U>& rhs) noexcept : base_type(rhs) {
-			fix_reference(rhs._gc_resolve());
+		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
+		reference_t(const reference_t<U>& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+			fix_reference(rhs);
 		}
 
-		template<typename U, typename = std::enable_if_t<(std::is_base_of_v<T, U> && std::is_convertible_v<U*, T*>) || (is_array_v<T> && std::is_same_v<T, U>) > >
+		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
 		my_type& operator=(const reference_t<U>& rhs) noexcept {
 			base_type::operator=(rhs);
-			fix_reference(rhs._gc_resolve());
+			fix_reference(rhs);
 			return *this;
 		}
 
@@ -943,7 +1004,18 @@ namespace garbage_collection
 
 	protected:
 		referenced_type* _gc_resolve() const noexcept {
-			return reinterpret_cast<referenced_type*>(raw_reference::_gc_resolve());
+			return static_cast<referenced_type*>(raw_reference::_gc_resolve());
+		}
+
+		template<typename U>
+		void fix_reference(const reference_t<U>& ref) {
+			U* source = ref._gc_resolve();
+			T* destination = dynamic_cast<T*>(source);
+			object_base* ob = dynamic_cast<object_base*>(source);
+			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+			gc_bits current = pointer.load(std::memory_order_acquire);
+			current.address.typed_offset = typed_offset;
+			pointer.store(current, std::memory_order_release);
 		}
 
 	private:
@@ -955,27 +1027,50 @@ namespace garbage_collection
 		template<typename T>
 		friend struct array;
 
-		reference_t(collector* the_gc_, arena* the_arena_, gc_bits bits) noexcept : raw_reference(the_gc_, the_arena_, bits) {
+		template<typename To, typename From>
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
+		template<typename T, typename... Args>
+		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
+		template<typename T>
+		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
+
+		template<typename T>
+		static reference_t<T> make_reference(object_base* obj, T* typed) {
+			return reference_t<T>(gc_bits::_gc_build_reference(obj, typed));
 		}
 
-		template<typename U>
-		void fix_reference(U* source) {
-			T* destination  = dynamic_cast<T*>(source);
-			object_base* ob = dynamic_cast<object_base*>(source);
-			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-			gc_bits current = pointer.load(std::memory_order_acquire);
-			current.address.typed_offset = typed_offset;
-			pointer.store(current, std::memory_order_release);
+		reference_t(gc_bits bits) noexcept : raw_reference(bits) {
 		}
 	};
 
 	template<typename T, typename Self>
-	struct registered_reference : reference_t<T>
+	struct registered_reference_t : reference_t<T>
 	{
-		using my_type = registered_reference<T, Self>;
+		using my_type = registered_reference_t<T, Self>;
 		using base_type = reference_t<T>;
 
-		using base_type::base_type;
+		registered_reference_t() noexcept : base_type() {
+		}
+
+		registered_reference_t(std::nullptr_t) noexcept : base_type(nullptr) {
+		}
+
+		registered_reference_t(const my_type& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+		}
+
+		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
+		registered_reference_t(const reference_t<U>& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+			this->fix_reference(rhs);
+		}
+
+		virtual ~registered_reference_t() noexcept override {
+			clear();
+		}
+
 		using base_type::operator=;
 
 	protected:
@@ -996,24 +1091,27 @@ namespace garbage_collection
 
 	// a typed GCed reference that registers itself as a field (no registration)
 	template<typename T>
-	struct member_t : reference_t<T> {
+	struct member_t final : reference_t<T>
+	{
 		using base_type = reference_t<T>;
 		using my_type   = member_t<T>;
 
 		using base_type::base_type;
+		using base_type::operator=;
 	};
 
 	// a typed GCed reference that registers itself as a global
 	template<typename T>
-	struct global_t : registered_reference<T, global_t<T> > {
-		using base_type = registered_reference<T, global_t<T> >;
-		using my_type = global_t<T>;
+	struct global_t final : registered_reference_t<T, global_t<T> >
+	{
+		using base_type = registered_reference_t<T, global_t<T> >;
+		using my_type   = global_t<T>;
 
 		using base_type::base_type;
 		using base_type::operator=;
 
 		reference_registry* get_registrar() const {
-			return &globals;
+			return &this->the_gc.globals;
 		}
 
 		static void* operator new  (size_t) = delete;
@@ -1024,15 +1122,16 @@ namespace garbage_collection
 
 	// a typed GCed reference that registers itself as a stack variable
 	template<typename T>
-	struct handle_t : registered_reference<T, handle_t<T> >
+	struct handle_t final : registered_reference_t<T, handle_t<T> >
 	{
-		using base_type = registered_reference<T, handle_t<T> >;
+		using base_type = registered_reference_t<T, handle_t<T> >;
 		using my_type   = handle_t<T>;
 
 		using base_type::base_type;
+		using base_type::operator=;
 
 		reference_registry* get_registrar() const {
-			return &this_gc_thread;
+			return &this_thread_data;
 		}
 
 		static void* operator new  (size_t) = delete;
@@ -1042,7 +1141,7 @@ namespace garbage_collection
 	};
 
 	template<typename To, typename From>
-	handle_t<normalize_t<To>> inline collector::gc_cast(const reference_t<From>& rhs) {
+	[[nodiscard]] handle_t<normalize_t<To>> inline gc_cast(const reference_t<From>& rhs) {
 		using real_type = normalize_t<To>;
 		if(!rhs) {
 			return handle_t<real_type>();
@@ -1051,66 +1150,84 @@ namespace garbage_collection
 		From* object = rhs._gc_resolve();
 		real_type* destination = dynamic_cast<real_type*>(object);
 		if(destination) {
-			object_base* ob = dynamic_cast<object_base*>(destination);
-			ob->_gc_add_ref();
-			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-			return handle_t<real_type>(reference_t<real_type>(this, &the_arena, gc_bits::_gc_build_reference(this, &the_arena, ob, typed_offset)));
+			object_base* base = dynamic_cast<object_base*>(destination);
+			base->_gc_add_ref();
+			return handle_t<real_type>(reference_t<real_type>(gc_bits::_gc_build_reference(base, destination)));
 		} else {
 			return handle_t<real_type>();
 		}
 	}
 
+#pragma warning(push)
+
+#pragma warning(disable: 26423) // warning C26423: The allocation was not directly assigned to an owner.
+#pragma warning(disable: 26424) // warning C264224: Failing to delete or assign ownership of allocation at line %d.
+
 	template<typename T, typename... Args>
-	std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline collector::gcnew(Args&&... args) {
-		thread_data::guard_unsafe g;
+	[[gsl::suppress(i.11)]]
+	[[gsl::suppress(r.11)]]
+	[[gsl::suppress(r.12)]]
+	[[nodiscard]]
+	std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline gcnew(Args&&... args) {
+		thread_data::guard_unsafe g(this_thread_data.make_guard());
 		using real_type = normalize_t<T>;
 
-		void* memory = the_arena.allocate(sizeof(real_type));
+		void* memory = the_gc.the_arena.allocate(sizeof(real_type));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
-		real_type* object = new(memory) real_type(std::forward<Args>(args)...);
-		object_base* ob = dynamic_cast<object_base*>(object);
-		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-		object->_gc_set_block_unsafe(this, &the_arena, memory, ob);
-		return handle_t<real_type>(reference_t<real_type>(this, &the_arena, gc_bits::_gc_build_reference(this, &the_arena, ob, typed_offset)));
+		real_type* typed = new(memory) real_type(std::forward<Args>(args)...);
+		the_gc.mark_allocated(memory);
+		object_base* base = dynamic_cast<object_base*>(typed);
+		base->_gc_set_block_unsafe(memory, base);
+		return handle_t<real_type>(reference_t<real_type>::make_reference(base, typed));
 	}
 
 	template<typename T>
-	std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline collector::gcnew(size_t len) {
-		thread_data::guard_unsafe g;
+	[[gsl::suppress(i.11)]]
+	[[gsl::suppress(r.11)]]
+	[[gsl::suppress(r.12)]]
+	[[nodiscard]]
+	std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline gcnew(size_t len) {
+		thread_data::guard_unsafe g(this_thread_data.make_guard());
 		using real_type = normalize_t<T>;
 
-		void* memory = the_arena.allocate(real_type::allocation_size(len));
+		void* memory = the_gc.the_arena.allocate(real_type::allocation_size(len));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
-		real_type* object = new(memory) real_type(len);
-		object_base* ob = dynamic_cast<object_base*>(object);
-		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-		object->_gc_set_block_unsafe(this, &the_arena, memory, ob);
-		return handle_t<real_type>(reference_t<real_type>(this, &the_arena, gc_bits::_gc_build_reference(this, &the_arena, ob, typed_offset)));
+		real_type* typed = new(memory) real_type(len);
+		the_gc.mark_allocated(memory);
+		object_base* base = dynamic_cast<object_base*>(typed);
+		base->_gc_set_block_unsafe(memory, base);
+		return handle_t<real_type>(reference_t<real_type>::make_reference(base, typed));
 	}
 
 	template<typename T>
-	std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline collector::gcnew(std::initializer_list<typename normalize_t<T>::element_type> init) {
-		thread_data::guard_unsafe g;
+	[[gsl::suppress(i.11)]]
+	[[gsl::suppress(r.11)]]
+	[[gsl::suppress(r.12)]]
+	[[nodiscard]]
+	std::enable_if_t<is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> inline gcnew(std::initializer_list<typename normalize_t<T>::element_type> init) {
+		thread_data::guard_unsafe g(this_thread_data.make_guard());
 		using real_type = normalize_t<T>;
 
 		size_t size = init.size();
-		void* memory = the_arena.allocate(real_type::allocation_size(size));
+		void* memory = the_gc.the_arena.allocate(real_type::allocation_size(size));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
-		real_type* object = new(memory) real_type(init);
-		object_base* ob = dynamic_cast<object_base*>(object);
-		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(object) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
-		object->_gc_set_block_unsafe(this, &the_arena, memory, ob);
-		return handle_t<real_type>(reference_t<real_type>(this, &the_arena, gc_bits::_gc_build_reference(this, &the_arena, ob, typed_offset)));
+		real_type* typed = new(memory) real_type(init);
+		the_gc.mark_allocated(memory);
+		object_base* base = dynamic_cast<object_base*>(typed);
+		base->_gc_set_block_unsafe(memory, base);
+		return handle_t<real_type>(reference_t<real_type>::make_reference(base, typed));
 	}
+
+#pragma warning(pop)
 
 	template<typename T>
 	using reference = reference_t<normalize_t<T>>;

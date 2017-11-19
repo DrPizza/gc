@@ -50,8 +50,10 @@
     <IncludePath>$(ProjectDir)gc;$(ProjectDir)include;C:\Code\Libraries\boost;$(IncludePath)</IncludePath>
     <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
-    <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
-    <RunCodeAnalysis>false</RunCodeAnalysis>
+    <CodeAnalysisRuleSet>CppCoreCheckRules.ruleset</CodeAnalysisRuleSet>
+    <RunCodeAnalysis>true</RunCodeAnalysis>
+    <EnableCppCoreCheck>true</EnableCppCoreCheck>
+    <EnableExperimentalCppCoreCheck>true</EnableExperimentalCppCoreCheck>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <IncludePath>$(ProjectDir)gc;$(ProjectDir)include;C:\Code\Libraries\boost;$(IncludePath)</IncludePath>
@@ -59,12 +61,14 @@
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
     <RunCodeAnalysis>false</RunCodeAnalysis>
+    <EnableCppCoreCheck>true</EnableCppCoreCheck>
+    <EnableExperimentalCppCoreCheck>true</EnableExperimentalCppCoreCheck>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PreprocessorDefinitions>_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <EnablePREfast>false</EnablePREfast>
+      <EnablePREfast>true</EnablePREfast>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
