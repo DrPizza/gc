@@ -2,23 +2,41 @@
 
 #include "gc.hpp"
 
+#define STRICT
+#define NOMINMAX
+
+#pragma warning(push)
+#pragma warning(disable: 4668) // warning C4668: '%s' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
+#pragma warning(disable: 5039) // warning C5039: '%s': pointer or reference to potentially throwing function passed to extern C function under -EHc. Undefined behavior may occur if this function throws an exception.
+
+
+
+#include <Windows.h>
+
+#pragma warning(pop)
+
+#include <iostream>
+
 namespace garbage_collection
 {
-	const gc_bits gc_bits::zero = { 0 };
+	const gc_bits gc_bits::zero = { 0ui64 };
 
 	collector the_gc;
 
 	thread_local thread_data this_thread_data;
 
-	gc_bits gc_bits::_gc_build_reference(object_base* base_pointer, void* typed_pointer) {
+	gc_bits gc_bits::_gc_build_reference(gsl::not_null<object_base*> base_pointer, gsl::not_null<void*> typed_pointer) noexcept {
 		gc_bits unresolved = the_gc.the_arena.pointer_to_bits(base_pointer);
 		unresolved.address.generation = gc_bits::young;
 		unresolved.address.seen_by_marker = the_gc.current_marker_phase.load(std::memory_order_acquire);
-		ptrdiff_t typed_offset = (reinterpret_cast<byte*>(base_pointer) - static_cast<byte*>(typed_pointer)) / static_cast<ptrdiff_t>(sizeof(void*));
+		const ptrdiff_t typed_offset = (static_cast<std::byte*>(typed_pointer.get()) - reinterpret_cast<std::byte*>(base_pointer.get())) / gsl::narrow_cast<ptrdiff_t>(sizeof(void*));
 		unresolved.address.typed_offset = typed_offset;
 		return unresolved;
 	}
 
+#pragma warning(push)
+#pragma warning(disable: 6001)  // warning C6001: Using uninitialized memory '%s'.
+#pragma warning(disable: 26495) // warning C26495: Variable '%s' is uninitialized. Always initialize a member variable. (type.6: http://go.microsoft.com/fwlink/p/?LinkID=620422)
 	arena::arena(size_t size_) : size(size_), page_count(size / page_size) {
 		ULARGE_INTEGER section_size = { 0 };
 		section_size.QuadPart = size;
@@ -28,9 +46,15 @@ namespace garbage_collection
 		}
 		do {
 			void* putative_base = ::VirtualAlloc(nullptr, size * 2, MEM_RESERVE, PAGE_READWRITE);
+			if(putative_base == nullptr) {
+				throw std::bad_alloc();
+			}
 			::VirtualFree(putative_base, 0, MEM_RELEASE);
-			base        = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, putative_base));
-			base_shadow = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, base + size  ));
+			base        = static_cast<std::byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, putative_base));
+			if(base == nullptr) {
+				continue;
+			}
+			base_shadow = static_cast<std::byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, base + size  ));
 			if(base_shadow == nullptr) {
 				::UnmapViewOfFile(base);
 			}
@@ -39,9 +63,15 @@ namespace garbage_collection
 
 		do {
 			void* putative_base = ::VirtualAlloc(nullptr, size * 2, MEM_RESERVE, PAGE_READWRITE);
+			if(putative_base == nullptr) {
+				throw std::bad_alloc();
+			}
 			::VirtualFree(putative_base, 0, MEM_RELEASE);
-			rw_base        = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, putative_base));
-			rw_base_shadow = static_cast<byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, rw_base + size));
+			rw_base        = static_cast<std::byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, putative_base));
+			if(rw_base == nullptr) {
+				continue;
+			}
+			rw_base_shadow = static_cast<std::byte*>(::MapViewOfFileEx(section, FILE_MAP_WRITE, 0, 0, section_size.QuadPart, rw_base + size));
 			if(rw_base_shadow == nullptr) {
 				::UnmapViewOfFile(rw_base);
 			}
@@ -51,6 +81,7 @@ namespace garbage_collection
 		high_watermark.store(maximum_alignment - sizeof(allocation_header), std::memory_order_release);
 		low_watermark .store(maximum_alignment - sizeof(allocation_header), std::memory_order_release);
 	}
+#pragma warning(pop)
 
 	arena::~arena() {
 		::UnmapViewOfFile(rw_base_shadow);
@@ -60,7 +91,7 @@ namespace garbage_collection
 		::CloseHandle(section);
 	}
 
-	void* arena::allocate(size_t amount) {
+	void* arena::allocate(size_t amount) noexcept {
 		// base_offset + sizeof(allocation_header) is already maximally aligned.
 		const size_t requested_size = sizeof(allocation_header) + amount;
 		      size_t padding_size = ((requested_size + (maximum_alignment - 1)) & ~(maximum_alignment - 1)) - requested_size;
@@ -83,7 +114,7 @@ namespace garbage_collection
 			}
 
 			size_t old_offset = h;
-			size_t new_offset = old_offset + allocated_size;
+			const size_t new_offset = old_offset + allocated_size;
 			if(high_watermark.compare_exchange_strong(old_offset, new_offset, std::memory_order_release)) {
 				base_offset = old_offset;
 				break;
@@ -101,34 +132,39 @@ namespace garbage_collection
 			return;
 		}
 
-		byte* region = static_cast<byte*>(region_);
-		if(region -    base >= static_cast<ptrdiff_t>(size)
-		&& region - rw_base >= static_cast<ptrdiff_t>(size)) {
+		std::byte* region = static_cast<std::byte*>(region_);
+		if(region -    base >= gsl::narrow_cast<ptrdiff_t>(size)
+		&& region - rw_base >= gsl::narrow_cast<ptrdiff_t>(size)) {
 			throw std::runtime_error("attempt to deallocate memory belonging to another arena");
 		}
 
 		allocation_header* header = reinterpret_cast<allocation_header*>(region - sizeof(allocation_header));
-		size_t block_size = header->allocated_size.load(std::memory_order_acquire);
+		const size_t block_size = header->allocated_size.load(std::memory_order_acquire);
 #ifdef _DEBUG
 		std::memset(region, 0xff, block_size - sizeof(allocation_header));
 #endif
 		header->allocated_size.store(0ui64, std::memory_order_release);
 
-		size_t block_offset = static_cast<size_t>(region - base);
+		size_t block_offset = gsl::narrow_cast<size_t>(region - base);
 		// if this just happens to be the lowest block, bump the low watermark optimistically
 		low_watermark.compare_exchange_strong(block_offset, block_offset + block_size, std::memory_order_release);
 	}
 
-	bool arena::is_protected(const gc_bits location) const {
-		// TODO: the arena should track which pages or ojects are being moved explicitly
-		// so that this can be made faster
-		return TRUE == ::IsBadWritePtr(bits_to_pointer(location), 1);
+	void bit_table::visualize() const noexcept
+	{
+		for(size_t i = 0; i < arena::page_size / arena::maximum_alignment / element_bits; ++i) {
+			for(size_t j = 0; j < element_bits; ++j) {
+				std::cout << ((bits[i] & (1 << j)) == 0 ? 0 : 1);
+			}
+		}
+		std::cout << std::endl;
 	}
+
 
 	void collector::collect() {
 		/*for(;;) */{
-			size_t low  = the_arena.low_watermark.load(std::memory_order_acquire);
-			size_t high = the_arena.high_watermark.load(std::memory_order_acquire);
+			const size_t low  = the_arena.low_watermark.load(std::memory_order_acquire);
+			const size_t high = the_arena.high_watermark.load(std::memory_order_acquire);
 
 			flip();
 			mark();
@@ -142,7 +178,7 @@ namespace garbage_collection
 			finalize(low, high);
 			shrink(low, high);
 			relocate(low, high);
-			remap();
+			remap(low, high);
 		}
 	}
 
@@ -152,14 +188,11 @@ namespace garbage_collection
 	}
 
 	void collector::mark() {
-		reachables.reset();
-		usage.reset();
-
 		root_set roots = scan_roots();
 
 		marker m(this);
 		for(registration r : roots) {
-			if(raw_reference* ref = std::get<raw_reference*>(r)) {
+			if(const raw_reference* const ref = std::get<raw_reference*>(r)) {
 				m.trace(ref);
 			} else {
 				m.trace(std::get<object_base*>(r));
@@ -174,7 +207,7 @@ namespace garbage_collection
 			if(local_copy.empty()) {
 				break;
 			}
-			for(object_base* obj : local_copy) {
+			for(const object_base* const obj : local_copy) {
 				m.trace(obj);
 			}
 		}
@@ -229,6 +262,36 @@ namespace garbage_collection
 		constexpr float threshold = 0.75f;
 		[[maybe_unused]] constexpr uint16_t byte_threshold = static_cast<uint16_t>(threshold * static_cast<float>(arena::page_size));
 
+		// find pages that are semi-empty
+		//     for each object within that page (which may start before the page...)
+		//         allocate a new block that's the same size
+		//         set the object header to move-in-progress
+		//         set page to ro (and surrounding pages, as necessary, to handle straddling objects)
+		//         do {
+		//             memcpy to the new block
+		//         } while(0 != memcmp(old, new) && !cmpxch(old header, move complete + new location));
+		//         wait for safepoint
+		//         for each thread
+		//             for each handle
+		//                 cmpxchg(old pointer, new pointer)
+		//         unprotect page(s)
+		//
+		// trap handler:
+		//     if object is moving
+		//         spin until object is in move completed status
+		//         redirect write to new location (same offset relative to start of block)
+		//     else if is moved
+		//         redirect write to new location (same offset relative to start of block)
+		//     else if object is not being relocated
+		//         redirect write to rw page
+		//
+		// reference read barrier:
+		//     if object is moving
+		//         spin until object is in move completed status
+		//         set reference to new value from object header
+	}
+
+	void collector::remap([[maybe_unused]] size_t bottom, [[maybe_unused]] size_t top) {
 	}
 
 	collector::root_set collector::scan_roots() {
@@ -242,29 +305,34 @@ namespace garbage_collection
 		return roots;
 	}
 
-	void collector::flip() {
-		page_allocations = std::make_unique<std::atomic<uint16_t>[]>(the_arena.page_count);
+	void collector::prepare() {
 		std::memset(page_allocations.get(), 0, sizeof(std::atomic<uint16_t>) * the_arena.page_count);
+		reachables.reset();
+		usage.reset();
+		readonly.reset();
+	}
+
+	void collector::flip() noexcept {
 		current_marker_phase.fetch_xor(1ui64, std::memory_order_release);
 		// TODO wait for all mutators to acknowledge flip
 	}
 
 	void collector::update_usage(const void* const addr, size_t object_size) {
-		size_t offset = the_arena.pointer_to_offset(addr);
+		const size_t offset = the_arena.pointer_to_offset(addr);
 		size_t page_space_remaining = arena::page_size - (offset % arena::page_size);
 		size_t page = offset / arena::page_size;
 		if(object_size > page_space_remaining) {
-			page_allocations[page++].fetch_add(static_cast<uint16_t>(page_space_remaining));
+			page_allocations[page++].fetch_add(gsl::narrow_cast<uint16_t>(page_space_remaining));
 			object_size -= page_space_remaining;
 			while(object_size >= arena::page_size) {
 				page_allocations[page++].store(arena::page_size);
 				object_size -= arena::page_size;
 			}
 		}
-		page_allocations[page].fetch_add(static_cast<uint16_t>(object_size));
+		page_allocations[page].fetch_add(gsl::narrow_cast<uint16_t>(object_size));
 	}
 
-	void marker::trace(const raw_reference* ref) {
+	void marker::trace(const raw_reference* ref) noexcept {
 		if(ref->pointer.load(std::memory_order_relaxed).address.seen_by_marker != the_gc->current_marker_phase) {
 			for(;;) {
 				gc_bits old_value = ref->pointer.load(std::memory_order_acquire);
@@ -275,14 +343,14 @@ namespace garbage_collection
 				}
 			}
 		}
-		object_base* obj = ref->_gc_resolve_base();
+		const object_base* const obj = ref->_gc_resolve_base();
 		if(!obj) {
 			return;
 		}
 		trace(obj);
 	}
 
-	void marker::trace(const object_base* obj) {
+	void marker::trace(const object_base* obj) noexcept {
 		void* base_address = obj->_gc_get_block();
 		if(!the_gc->is_marked_allocated(base_address)) {
 			// this can occur when the stack unwind destroys the last reference during a GC sweep
@@ -295,7 +363,7 @@ namespace garbage_collection
 		}
 	}
 
-	void nuller::trace(const raw_reference* ref) {
+	void nuller::trace(const raw_reference* ref) noexcept {
 		[[gsl::suppress(type.3)]]
 		*const_cast<raw_reference*>(ref) = nullptr;
 	}

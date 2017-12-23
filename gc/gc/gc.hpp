@@ -1,40 +1,20 @@
 #pragma once
 
-//#pragma warning(disable: 4571) // warning C4571: Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught
-//#pragma warning(disable: 4987) // warning C4987: nonstandard extension used: 'throw (...)'
-
 #if !defined(_STL_EXTRA_DISABLED_WARNINGS)
-#define _STL_EXTRA_DISABLED_WARNINGS 4061 4623 4365 4571 4625 4626 4710 4820 4987 5026 5027
+#define _STL_EXTRA_DISABLED_WARNINGS 4061 4324 4365 4514 4571 4582 4583 4623 4625 4626 4710 4774 4820 4987 5026 5027 5039
 #endif
 
 #if !defined(_SCL_SECURE_NO_WARNINGS)
 #define _SCL_SECURE_NO_WARNINGS 1
 #endif
 
-#include <cstddef>
-#include <new>
-#include <cassert>
-#include <atomic>
-#include <array>
-#include <vector>
-#include <thread>
-#include <unordered_map>
-#include <type_traits>
-#include <initializer_list>
-#include <mutex>
-#include <shared_mutex>
-#include <condition_variable>
-#include <thread>
-#include <tuple>
-#include <map>
-#include <set>
-#include <typeinfo>
-#include <memory>
-#include <unordered_map>
-#include <unordered_set>
-#include <stdexcept>
+#if !defined(_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING)
+#define _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING 1
+#endif
 
+// disable for everything
 #pragma warning(disable: 4324) // warning C4234: structure was padded due to alignment specifier
+#pragma warning(disable: 4514) // warning C4514: '%s': unreferenced inline function has been removed
 #pragma warning(disable: 4625) // warning C4625: '%s': copy constructor was implicitly defined as deleted
 #pragma warning(disable: 4626) // warning C4626: '%s': assignment operator was implicitly defined as deleted
 #pragma warning(disable: 4710) // warning C4710: '%s': function not inlined
@@ -48,13 +28,76 @@
 #pragma warning(disable: 26490) // warning C26490: Don't use reinterpret_cast. (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417)
 #pragma warning(disable: 26499) // warning C26499: Could not find any lifetime tracking information for '%s'
 
+// disable for standard headers
+#pragma warning(push)
+#pragma warning(disable: 5039) // warning C5039: '%s': pointer or reference to potentially throwing function passed to extern C function under -EHc. Undefined behavior may occur if this function throws an exception.
+
+#pragma warning(disable: 26400) // warning C26400: Do not assign the result of an allocation or a function call with an owner<T> return value to a raw pointer, use owner<T> instead. (i.11 http://go.microsoft.com/fwlink/?linkid=845474)
+#pragma warning(disable: 26401) // warning C26401: Do not delete a raw pointer that is not an owner<T>. (i.11: http://go.microsoft.com/fwlink/?linkid=845474)
+#pragma warning(disable: 26408) // warning C26408: Avoid malloc() and free(), prefer the nothrow version of new with delete. (r.10 http://go.microsoft.com/fwlink/?linkid=845483)
+#pragma warning(disable: 26409) // warning C26409: Avoid calling new and delete explicitly, use std::make_unique<T> instead. (r.11 http://go.microsoft.com/fwlink/?linkid=845485)
+#pragma warning(disable: 26411) // warning C26411: The parameter '%s' is a reference to unique pointer and it is never reassigned or reset, use T* or T& instead. (r.33 http://go.microsoft.com/fwlink/?linkid=845479)
+#pragma warning(disable: 26412) // warning C26412: Do not dereference an invalid pointer (lifetimes rule 1). 'return of %s' was invalidated at line %d by 'end of function scope (local lifetimes end)'.
+#pragma warning(disable: 26413) // warning C26413: Do not dereference nullptr (lifetimes rule 2). 'nullptr' was pointed to nullptr at line %d.
+#pragma warning(disable: 26423) // warning C26423: The allocation was not directly assigned to an owner.
+#pragma warning(disable: 26424) // warning C26424: Failing to delete or assign ownership of allocation at line %d.
+#pragma warning(disable: 26425) // warning C26425: Assigning '%s' to a static variable.
+#pragma warning(disable: 26429) // warning C26429: Symbol '%s' is never tested for nullness, it can be marked as not_null (f.23: http://go.microsoft.com/fwlink/?linkid=853921).
+#pragma warning(disable: 26430) // warning C26430: Symbol '%s' is not tested for nullness on all paths (f.23: http://go.microsoft.com/fwlink/?linkid=853921).
+#pragma warning(disable: 26432) // warning C26432: If you define or delete any default operation in the type '%s', define or delete them all (c.21: http://go.microsoft.com/fwlink/?linkid=853922).
+#pragma warning(disable: 26434) // warning C26434: Function '%s' hides a non-virtual function '%s' (c.128: http://go.microsoft.com/fwlink/?linkid=853923).
+#pragma warning(disable: 26436) // warning C26436: The type '%s' with a virtual function needs either public virtual or protected nonvirtual destructor (c.35: http://go.microsoft.com/fwlink/?linkid=853924).
+#pragma warning(disable: 26437) // warning C26437: Do not slice (es.63: http://go.microsoft.com/fwlink/?linkid=853925).
+#pragma warning(disable: 26439) // warning C26432: This kind of function may not throw. Declare it 'noexcept' (f.6: http://go.microsoft.com/fwlink/?linkid=853927).
+#pragma warning(disable: 26440) // warning C26440: Function '%s' can be declared 'noexcept' (f.6: http://go.microsoft.com/fwlink/?linkid=853927).
+#pragma warning(disable: 26460) // warning C26460: The reference argument '%s' for function '%s' can be marked as const (con.3: https://go.microsoft.com/fwlink/p/?LinkID=786684).
+#pragma warning(disable: 26461) // warning C26461: The reference argument '%s' for function %s can be marked as const. (con.3: https://go.microsoft.com/fwlink/p/?LinkID=786684)
+#pragma warning(disable: 26462) // warning C26462: The value pointed to by '%s' is assigned only once, mark it as a pointer to const (con.4: https://go.microsoft.com/fwlink/p/?LinkID=784969).
+#pragma warning(disable: 26471) // warning C26471: Don't use reinterpret_cast. A cast from void* can use static_cast. (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417).
+#pragma warning(disable: 26472) // warning C26472: Don't use a static_cast for arithmetic conversions. Use brace initialization, gsl::narrow_cast or gsl::narow (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417).
+#pragma warning(disable: 26473) // warning C26473: Don't cast between pointer types where the source type and the target type are the same (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417).
+#pragma warning(disable: 26474) // warning C26474: Don't cast between pointer types when the conversion could be implicit (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417).
+#pragma warning(disable: 26475) // warning C26475: Do not use function style C-casts (es.49: http://go.microsoft.com/fwlink/?linkid=853930).
+#pragma warning(disable: 26481) // warning C26481: Don't use pointer arithmetic. Use span instead. (bounds.1: http://go.microsoft.com/fwlink/p/?LinkID=620413)
+#pragma warning(disable: 26482) // warning C26482: Only index into arrays using constant expressions. (bounds.2: http://go.microsoft.com/fwlink/p/?LinkID=620414)
+#pragma warning(disable: 26490) // warning C26490: Don't use reinterpret_cast. (type.1: http://go.microsoft.com/fwlink/p/?LinkID=620417)
+#pragma warning(disable: 26491) // warning C26491: Don't use static_cast downcasts (type.2: http://go.microsoft.com/fwlink/p/?LinkID=620418).
+#pragma warning(disable: 26492) // warning C26492: Don't use const_cast to cast away const (type.3: http://go.microsoft.com/fwlink/p/?LinkID=620419).
+#pragma warning(disable: 26493) // warning C26493: Don't use C-style casts that would perform a static_cast downcast, const_cast, or reinterpret_cast. (type.4: http://go.microsoft.com/fwlink/p/?LinkID=620420)
+#pragma warning(disable: 26494) // warning C26494: Variable '%s' is uninitialized. Always initialize an object. (type.5: http://go.microsoft.com/fwlink/p/?LinkID=620421)
+#pragma warning(disable: 26495) // warning C26495: Variable '%s' is uninitialized. Always initialize a member variable. (type.6: http://go.microsoft.com/fwlink/p/?LinkID=620422)
+#pragma warning(disable: 26496) // warning C26496: Variable '%s' is assigned only once, mark it as const. (con.4: https://go.microsoft.com/fwlink/p/?LinkID=784969)
+#pragma warning(disable: 26497) // warning C26497: This function %s could be marked constexpr if compile-time evaluation is desired. (f.4: https://go.microsoft.com/fwlink/p/?LinkID=784970)
+
+#include <cstddef>
+#include <thread>
+#include <new>
+#include <cassert>
+#include <atomic>
+#include <array>
+#include <vector>
+#include <thread>
+#include <unordered_map>
+#include <type_traits>
+#include <initializer_list>
+#include <mutex>
+#include <shared_mutex>
+#include <condition_variable>
+#include <tuple>
+#include <map>
+#include <set>
+#include <typeinfo>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <stdexcept>
+
 #include <gsl/gsl>
 
-//#pragma warning(disable: 4365) // warning C4365: '%s': conversion from '%s' to '%s', signed/unsigned mismatch
-//#pragma warning(disable: 4464) // warning C4464: relative include path contains '..'
-//#pragma warning(disable: 4574) // warning C4574: '%s' is defined to be '%s': did you mean to use '#if %s'?
+#pragma warning(pop)
 
-#pragma pointers_to_members(full_generality, virtual_inheritance)  
+#pragma pointers_to_members(full_generality, virtual_inheritance)
+#pragma vtordisp(2)
 
 namespace garbage_collection
 {
@@ -73,7 +116,8 @@ namespace garbage_collection
 			size_t    page_offset    : 12; // 4K pages => 12 bit page offset
 			size_t    page_number    : 28;
 			size_t    generation     : 2;
-			size_t    seen_by_marker : 2;
+			size_t    seen_by_marker : 1;
+			size_t    valid          : 1;
 			ptrdiff_t typed_offset   : 12; // where to find the start of the typed object, relative to the address of the object_base, in void*s.
 			                               // this limits objects to 2^15 bytes. the C++ spec requires at least 2^18. maybe find some extra bits.
 		} address;
@@ -106,10 +150,9 @@ namespace garbage_collection
 			fixed = 0,
 			young = 1,
 			old = 2,
-			max_arenas = 3,
 		};
 
-		static gc_bits _gc_build_reference(object_base* base_pointer, void* typed_pointer);
+		static gc_bits _gc_build_reference(gsl::not_null<object_base*> base_pointer, gsl::not_null<void*> typed_pointer) noexcept;
 
 		static const gc_bits zero;
 	};
@@ -202,13 +245,21 @@ namespace garbage_collection
 
 	struct visitor
 	{
-		virtual void trace(const raw_reference* ref) = 0;
-		virtual void trace(const object_base*) {
+		visitor() = default;
+		visitor(const visitor&) = default;
+		visitor(visitor&&) = default;
+		visitor& operator=(const visitor&) = default;
+		visitor& operator=(visitor&&) = default;
+
+		virtual void trace(const raw_reference* ref) noexcept = 0;
+		virtual void trace(const object_base*) noexcept {
 		}
 
-		void trace(const raw_reference& ref) {
+		void trace(const raw_reference& ref) noexcept {
 			trace(&ref);
 		}
+
+		virtual ~visitor() = default;
 	};
 
 	struct arena
@@ -218,10 +269,10 @@ namespace garbage_collection
 		size_t page_count;
 
 		void* section;
-		byte* base;
-		byte* base_shadow;
-		byte* rw_base;
-		byte* rw_base_shadow;
+		std::byte* base;
+		std::byte* base_shadow;
+		std::byte* rw_base;
+		std::byte* rw_base_shadow;
 		std::atomic<size_t> low_watermark;
 		std::atomic<size_t> high_watermark;
 
@@ -240,9 +291,8 @@ namespace garbage_collection
 			ptrdiff_t object_offset;
 		};
 
-		[[nodiscard]] void* allocate(size_t amount);
+		[[nodiscard]] void* allocate(size_t amount) noexcept;
 		void deallocate(void* region);
-		[[nodiscard]] bool is_protected(const gc_bits location) const;
 
 		size_t approximately_available() const noexcept {
 			return size - (high_watermark.load(std::memory_order_relaxed) - low_watermark.load(std::memory_order_relaxed));
@@ -253,12 +303,12 @@ namespace garbage_collection
 			return old_location;
 		}
 
-		[[nodiscard]] allocation_header* get_header(void* const block) const noexcept {
-			allocation_header* const header = reinterpret_cast<allocation_header*>(static_cast<byte*>(block) - sizeof(allocation_header));
+		[[nodiscard]] allocation_header* get_header(gsl::not_null<void*> const block) const noexcept {
+			allocation_header* const header = reinterpret_cast<allocation_header*>(static_cast<std::byte*>(block.get()) - sizeof(allocation_header));
 			return header;
 		}
 
-		[[nodiscard]] size_t get_block_size(void* const block) const noexcept {
+		[[nodiscard]] size_t get_block_size(gsl::not_null<void*> const block) const noexcept {
 			const allocation_header* const header = get_header(block);
 			return header->allocated_size.load(std::memory_order_acquire);
 		}
@@ -267,26 +317,29 @@ namespace garbage_collection
 			return base + offset;
 		}
 
-		[[nodiscard]] size_t pointer_to_offset(const void* const location) const noexcept {
-			if(location == nullptr) {
-				return 0ui64;
-			}
-			return static_cast<size_t>(static_cast<const byte*>(location) - base);
+		[[nodiscard]] size_t pointer_to_offset(gsl::not_null<const void*> const location) const noexcept {
+			return gsl::narrow_cast<std::size_t>(static_cast<const std::byte*>(location.get()) - base);
 		}
 
 		[[nodiscard]] void* bits_to_pointer(const gc_bits location) const noexcept {
-			if(location.raw.pointer == 0) {
-				return nullptr;
-			}
-			const size_t offset = (location.address.page_number * page_size) + location.address.page_offset;
-			return offset_to_pointer(offset);
+			return offset_to_pointer(bits_to_offset(location));
 		}
 	
-		[[nodiscard]] gc_bits pointer_to_bits(const void* const location) const noexcept {
+		[[nodiscard]] gc_bits pointer_to_bits(gsl::not_null<const void*> const location) const noexcept {
 			const size_t offset = pointer_to_offset(location);
+			return offset_to_bits(pointer_to_offset(location));
+		}
+
+		[[nodiscard]] size_t bits_to_offset(const gc_bits location) const noexcept {
+			const size_t offset = (location.address.page_number * page_size) + location.address.page_offset;
+			return offset;
+		}
+
+		[[nodiscard]] gc_bits offset_to_bits(size_t offset) const noexcept {
 			gc_bits value = { 0 };
 			value.address.page_number = offset / page_size;
 			value.address.page_offset = offset % page_size;
+			value.address.valid = 1;
 			return value;
 		}
 	};
@@ -300,21 +353,21 @@ namespace garbage_collection
 			std::memset(bits.get(), 0, size * sizeof(element));
 		}
 
-		bool set_bit(size_t offset) {
+		bool set_bit(size_t offset) noexcept {
 			const std::pair<size_t, uint8_t> position = offset_to_bit_position(offset);
-			const element mask = static_cast<element>(1u << position.second);
+			const element mask = gsl::narrow_cast<element>(1u << position.second);
 			const element orig = bits[position.first].fetch_or(mask, std::memory_order_release);
-			return 1u == static_cast<element>((orig & mask) >> position.second);
+			return 1u == gsl::narrow_cast<element>((orig & mask) >> position.second);
 		}
 
-		bool clear_bit(size_t offset) {
+		bool clear_bit(size_t offset) noexcept {
 			const std::pair<size_t, uint8_t> position = offset_to_bit_position(offset);
-			const element mask = static_cast<element>(1u << position.second);
-			const element orig = bits[position.first].fetch_and(static_cast<element>(~mask), std::memory_order_release);
-			return 1u == static_cast<element>((orig & mask) >> position.second);
+			const element mask = gsl::narrow_cast<element>(1u << position.second);
+			const element orig = bits[position.first].fetch_and(gsl::narrow_cast<element>(~mask), std::memory_order_release);
+			return 1u == gsl::narrow_cast<element>((orig & mask) >> position.second);
 		}
 
-		[[nodiscard]] bool query_bit(size_t offset) {
+		[[nodiscard]] bool query_bit(size_t offset) const noexcept {
 			const std::pair<size_t, uint8_t> position = offset_to_bit_position(offset);
 			return 1u == ((bits[position.first].load(std::memory_order_relaxed) >> position.second) & 1u);
 		}
@@ -324,33 +377,34 @@ namespace garbage_collection
 			std::memset(bits.get(), 0, size * sizeof(std::atomic<element>));
 		}
 
-		[[nodiscard]] static std::pair<size_t, uint8_t> offset_to_bit_position(size_t offset) {
+		[[nodiscard]] static std::pair<size_t, uint8_t> offset_to_bit_position(size_t offset) noexcept {
 			const size_t block_number = offset / arena::maximum_alignment;
 			const size_t byte_number = block_number / element_bits;
 			const uint8_t bit_number = block_number % element_bits;
 			return { byte_number, bit_number };
 		}
 
-		[[nodiscard]] static size_t bit_position_to_offset(size_t byte_number, size_t bit_number) {
+		[[nodiscard]] constexpr static size_t bit_position_to_offset(size_t byte_number, size_t bit_number) noexcept {
 			const size_t block_number = (byte_number * element_bits) + bit_number;
 			return block_number * arena::maximum_alignment;
 		}
 
-		void visualize() const {
-			for(size_t i = 0; i < arena::page_size / arena::maximum_alignment / element_bits; ++i) {
-				for(size_t j = 0; j < element_bits; ++j) {
-					std::cout << ((bits[i] & (1 << j)) == 0 ? 0 : 1);
-				}
-			}
-			std::cout << std::endl;
-		}
+		void visualize() const noexcept;
 
 		size_t size;
 		std::unique_ptr<std::atomic<element /*std::byte*/>[]> bits;
 	};
 
+#pragma warning(push)
+#pragma warning(disable: 26439) // warning C26439: This kind of function may not throw. Declare it 'noexcept' (f.6: http://go.microsoft.com/fwlink/?linkid=853927).
 	struct reference_registry
 	{
+		reference_registry() = default;
+		reference_registry(const reference_registry&) = delete;
+		reference_registry(reference_registry&&) = delete;
+		reference_registry& operator=(const reference_registry&) = delete;
+		reference_registry& operator=(reference_registry&&) = delete;
+
 		using registration = std::tuple<raw_reference*, object_base*>;
 
 		void register_reference(raw_reference* ref, object_base* obj) {
@@ -377,7 +431,7 @@ namespace garbage_collection
 		virtual ~reference_registry() {
 		}
 
-	//private:
+	private:
 		std::mutex references_mtx;
 		std::map<raw_reference*, object_base*> references;
 	};
@@ -385,23 +439,27 @@ namespace garbage_collection
 	struct thread_data : reference_registry {
 		thread_data();
 		thread_data(const thread_data&) = delete;
+		thread_data(thread_data&&) = delete;
+		thread_data& operator=(const thread_data&) = delete;
+		thread_data& operator=(thread_data&&) = delete;
 		~thread_data();
 
 		// create one of these whenever we might have unprotected references on the stack
 		struct [[nodiscard]] guard_unsafe {
-			guard_unsafe(thread_data* td_) : td(td_) {
+			guard_unsafe(thread_data* td_) noexcept : td(td_) {
 				td->enter_unsafe();
 			}
 
-			guard_unsafe(guard_unsafe&& rhs) : td(rhs.td) {
+			guard_unsafe(guard_unsafe&& rhs) noexcept : td(std::exchange(rhs.td, nullptr)) {
 				rhs.td = nullptr;
 			}
 
 			guard_unsafe() = delete;
 			guard_unsafe(const guard_unsafe&) = delete;
 			guard_unsafe& operator=(const guard_unsafe&) = delete;
+			guard_unsafe& operator=(guard_unsafe&& rhs) = delete;
 
-			~guard_unsafe() {
+			~guard_unsafe() noexcept {
 				if(td) {
 					td->leave_unsafe();
 				}
@@ -411,7 +469,7 @@ namespace garbage_collection
 			thread_data* td;
 		};
 
-		guard_unsafe make_guard() {
+		guard_unsafe make_guard() noexcept {
 			return guard_unsafe(this);
 		}
 
@@ -441,10 +499,30 @@ namespace garbage_collection
 	struct global_data : reference_registry
 	{
 	};
+#pragma warning(pop)
 
 	struct collector
 	{
-		collector(size_t size_ = 1ui64 << 30) : the_arena(size_), reachables(size_), allocateds(size_), usage(size_) {
+		collector(size_t size_ = 1ui64 << 30) noexcept : the_arena(size_),
+		                                                 current_marker_phase(0ui64),
+		                                                 allocateds(size_),
+		                                                 reachables(size_),
+		                                                 usage(size_),
+		                                                 readonly(size_),
+		                                                 page_allocations(std::make_unique<std::atomic<uint16_t>[]>(the_arena.page_count))
+		{
+			master_thread = std::thread([] {
+				return;
+			});
+		}
+
+		collector(const collector&) = delete;
+		collector(collector&&) = delete;
+		collector& operator=(const collector&) = delete;
+		collector& operator=(collector&&) = delete;
+
+		~collector() {
+			master_thread.join();
 		}
 
 		template<typename T, typename... Args>
@@ -474,9 +552,7 @@ namespace garbage_collection
 
 		void relocate(size_t bottom, size_t top);
 
-		void remap() {
-
-		}
+		void remap(size_t bottom, size_t top);
 
 		void finalize(size_t bottom, size_t top);
 
@@ -498,15 +574,21 @@ namespace garbage_collection
 		}
 
 	protected:
-		bool is_marked_reachable(const void* const address) {
+		// TODO move this to the collector class
+		[[nodiscard]] bool is_protected(const gc_bits location) const noexcept {
+			return readonly.query_bit(the_arena.bits_to_offset(location));
+		}
+
+
+		[[nodiscard]] bool is_marked_reachable(gsl::not_null<const void*> const address) const noexcept {
 			return reachables.query_bit(the_arena.pointer_to_offset(address));
 		}
 
-		bool is_marked_allocated(const void* const address) {
+		[[nodiscard]] bool is_marked_allocated(gsl::not_null<const void*> const address) const noexcept {
 			return allocateds.query_bit(the_arena.pointer_to_offset(address));
 		}
 
-		void mark_reachable(void* const address) {
+		void mark_reachable(gsl::not_null<void*> const address) {
 			const arena::allocation_header* const header = the_arena.get_header(address);
 			size_t object_size = header->allocated_size;
 			update_usage(address, object_size);
@@ -520,11 +602,11 @@ namespace garbage_collection
 			}
 		}
 
-		void mark_allocated(const void* const address) {
+		void mark_allocated(gsl::not_null<const void*> const address) noexcept {
 			allocateds.set_bit(the_arena.pointer_to_offset(address));
 		}
 
-		bool mark_destroyed(const void* const address) {
+		bool mark_destroyed(gsl::not_null<const void*> const address) noexcept {
 			return allocateds.clear_bit(the_arena.pointer_to_offset(address));
 		}
 
@@ -536,7 +618,8 @@ namespace garbage_collection
 		using root_set = std::vector<registration>;
 		using mark_queue = std::unordered_set<object_base*>;
 
-		void flip();
+		void prepare();
+		void flip() noexcept;
 
 		root_set scan_roots();
 
@@ -547,10 +630,13 @@ namespace garbage_collection
 		std::mutex mutated_lock;
 		mark_queue mutated_objects;
 
-		bit_table reachables;
 		bit_table allocateds;
+		bit_table reachables;
 		bit_table usage;
+		bit_table readonly;
 		std::unique_ptr<std::atomic<uint16_t>[]> page_allocations;
+
+		std::thread master_thread;
 	};
 
 	extern collector the_gc;
@@ -565,11 +651,11 @@ namespace garbage_collection
 
 	struct marker : visitor
 	{
-		marker(collector* the_gc_) : the_gc(the_gc_) {
+		marker(collector* the_gc_) noexcept : the_gc(the_gc_) {
 		}
 
-		virtual void trace(const raw_reference* ref) override;
-		virtual void trace(const object_base* obj) override;
+		virtual void trace(const raw_reference* ref) noexcept override;
+		virtual void trace(const object_base* obj) noexcept override;
 		using visitor::trace;
 
 	private:
@@ -578,7 +664,7 @@ namespace garbage_collection
 
 	struct nuller : visitor
 	{
-		virtual void trace(const raw_reference* ref) override;
+		virtual void trace(const raw_reference* ref) noexcept override;
 		using visitor::trace;
 	};
 
@@ -599,13 +685,13 @@ namespace garbage_collection
 		}
 
 		static void* operator new  (size_t) = delete;
-		static void* operator new  (size_t, void* ptr) { return ptr; }
+		static void* operator new  (size_t, void* ptr) noexcept { return ptr; }
 		static void* operator new[](size_t) = delete;
-		static void* operator new[](size_t, void* ptr) { return ptr; }
+		static void* operator new[](size_t, void* ptr) noexcept { return ptr; }
 
-		virtual void _gc_trace(visitor*) const = 0;
+		virtual void _gc_trace(gsl::not_null<visitor*>) const noexcept = 0;
 
-		static void guarded_destruct(const object_base* obj) {
+		static void guarded_destruct(gsl::not_null<const object_base*> obj) noexcept {
 			if(the_gc.mark_destroyed(obj->_gc_get_block())) {
 				nuller n;
 				obj->_gc_trace(&n);
@@ -615,13 +701,13 @@ namespace garbage_collection
 		}
 
 	protected:
-		void _gc_set_block_unsafe(void* addr, object_base* obj) noexcept {
+		void _gc_set_block_unsafe(gsl::not_null<void*> addr, gsl::not_null<const object_base*> obj) noexcept {
 			const gc_bits location = the_gc.the_arena.pointer_to_bits(addr);
 			gc_bits current = count.load(std::memory_order_acquire);
 			current.header.raw_address = location.header.raw_address;
 			count.store(current, std::memory_order_release);
 
-			the_gc.the_arena.get_header(addr)->object_offset = reinterpret_cast<byte*>(obj) - static_cast<byte*>(addr);
+			the_gc.the_arena.get_header(addr)->object_offset = reinterpret_cast<const std::byte*>(obj.get()) - static_cast<std::byte*>(addr.get());
 		}
 
 		void* _gc_get_block() const noexcept {
@@ -636,7 +722,7 @@ namespace garbage_collection
 		friend struct marker;
 		friend struct raw_reference;
 		template<typename To, typename From>
-		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs) noexcept;
 		template<typename T, typename... Args>
 		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
 		template<typename T>
@@ -678,7 +764,7 @@ namespace garbage_collection
 
 	struct object : virtual object_base
 	{
-		virtual void _gc_trace(visitor*) const override {
+		virtual void _gc_trace(gsl::not_null<visitor*>) const noexcept override {
 		}
 	};
 
@@ -721,7 +807,7 @@ namespace garbage_collection
 			return len;
 		}
 
-		virtual void _gc_trace(visitor* v) const override {
+		virtual void _gc_trace(gsl::not_null<visitor*> v) const noexcept override {
 			if constexpr(std::is_convertible_v<T*, object_base*>) {
 				const element_type* es = elements();
 				for(size_t i = 0; i < len; ++i) {
@@ -739,7 +825,7 @@ namespace garbage_collection
 		template<typename T>
 		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
-		static size_t allocation_size(size_t len) {
+		constexpr static size_t allocation_size(size_t len) noexcept {
 			return sizeof(array<T>) + (len * sizeof(element_type));
 		}
 
@@ -763,7 +849,7 @@ namespace garbage_collection
 		box(const element_type& e) noexcept(std::is_nothrow_copy_constructible_v<element_type>) : val(e) {
 		}
 
-		virtual void _gc_trace(visitor* v) const override {
+		virtual void _gc_trace(gsl::not_null<visitor*> v) const noexcept override {
 			if constexpr(std::is_convertible_v<T*, object_base*>) {
 				v->trace(val);
 			}
@@ -785,7 +871,7 @@ namespace garbage_collection
 	struct raw_reference
 	{
 		explicit operator bool() const noexcept {
-			return pointer.load().raw.pointer != gc_bits::zero.raw.pointer;
+			return pointer.load().address.valid;
 		}
 
 		bool operator==(const raw_reference& rhs) const noexcept {
@@ -802,6 +888,10 @@ namespace garbage_collection
 			return *this;
 		}
 
+		virtual ~raw_reference() noexcept {
+			clear();
+		}
+
 	protected:
 		raw_reference() noexcept : pointer() {
 		}
@@ -813,6 +903,10 @@ namespace garbage_collection
 			assign(rhs);
 		}
 
+		raw_reference(raw_reference&& rhs) noexcept {
+			assign(rhs);
+		}
+
 		raw_reference& operator=(const raw_reference& rhs) noexcept {
 			if(this != &rhs) {
 				clear();
@@ -821,37 +915,46 @@ namespace garbage_collection
 			return *this;
 		}
 
+		raw_reference& operator=(raw_reference&& rhs) noexcept {
+			if(this != &rhs) {
+				clear();
+				assign(rhs);
+			}
+			return *this;
+		}
+
 		virtual void assign(const raw_reference& rhs) noexcept {
-			if(const object_base* const obj = rhs._gc_resolve_base()) {
+			if(rhs.pointer.load(std::memory_order_acquire).address.valid) {
+				const object_base* const obj = rhs._gc_resolve_base();
 				obj->_gc_add_ref();
 			}
 			_gc_write_barrier();
 			pointer.store(rhs.pointer.load(std::memory_order_acquire));
 		}
 
+		virtual void assign(raw_reference&& rhs) noexcept {
+			_gc_write_barrier();
+			pointer.store(rhs.pointer.load(std::memory_order_acquire), std::memory_order_release);
+			rhs.pointer.store(gc_bits::zero, std::memory_order_release);
+		}
+
 		virtual void clear() noexcept {
-			if(const object_base* const obj = _gc_resolve_base_no_queue()) {
+			if(pointer.load(std::memory_order_acquire).address.valid) {
+				const object_base* const obj = _gc_resolve_base_no_queue();
 				obj->_gc_del_ref();
 			}
 			pointer.store(gc_bits::zero, std::memory_order_release);
 		}
 
-		virtual ~raw_reference() noexcept {
-			clear();
-		}
-
 		// use this exclusively when a reference is being destroyed
 		object_base* _gc_resolve_base_no_queue() const noexcept {
-			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
-				return nullptr;
-			}
-			const gc_bits value = _gc_read_barrier_no_queue();
+			const gc_bits value = _gc_read_barrier<false>();
 			object_base* ob = static_cast<object_base*>(the_gc.the_arena.bits_to_pointer(value));
 			return ob;
 		}
 
 		object_base* _gc_resolve_base() const noexcept {
-			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
+			if(!pointer.load(std::memory_order_acquire).address.valid) {
 				return nullptr;
 			}
 			const gc_bits value = _gc_read_barrier();
@@ -860,12 +963,12 @@ namespace garbage_collection
 		}
 
 		void* _gc_resolve() const noexcept {
-			if(!pointer.load(std::memory_order_acquire).raw.pointer) {
+			if(!pointer.load(std::memory_order_acquire).address.valid) {
 				return nullptr;
 			}
 			const gc_bits value = _gc_read_barrier();
-			object_base* ob = _gc_resolve_base();
-			byte* derived_object = reinterpret_cast<byte*>(ob) + (value.address.typed_offset * static_cast<ptrdiff_t>(sizeof(void*)));
+			object_base* ob = static_cast<object_base*>(the_gc.the_arena.bits_to_pointer(value));
+			std::byte* derived_object = reinterpret_cast<std::byte*>(ob) + (value.address.typed_offset * gsl::narrow_cast<ptrdiff_t>(sizeof(void*)));
 			return derived_object;
 		}
 
@@ -875,26 +978,18 @@ namespace garbage_collection
 			// maybe I can judge based on the location of 'this'
 		}
 
-		gc_bits _gc_read_barrier_no_queue() const noexcept {
-			gc_bits value = pointer.load();
-			bool relocated = false;
-			if(the_gc.the_arena.is_protected(value)) {
-				relocated = true;
-			}
-			if(relocated) {
-				value = _gc_load_barrier_fix(value, false, relocated);
-			}
-			return value;
-		}
-
+		template<bool check_marker = true>
+		[[gsl::suppress(con.4)]]
 		gc_bits _gc_read_barrier() const noexcept {
 			gc_bits value = pointer.load();
 			bool marker_phase_changed = false;
-			if(value.address.seen_by_marker != the_gc.current_marker_phase) {
-				marker_phase_changed = true;
+			if constexpr(check_marker) {
+				if(value.address.seen_by_marker != the_gc.current_marker_phase) {
+					marker_phase_changed = true;
+				}
 			}
 			bool relocated = false;
-			if(the_gc.the_arena.is_protected(value)) {
+			if(the_gc.is_protected(value)) {
 				relocated = true;
 			}
 			if(marker_phase_changed || relocated) {
@@ -914,13 +1009,15 @@ namespace garbage_collection
 					new_value.address.seen_by_marker = the_gc.current_marker_phase;
 				}
 				if(relocated) {
-					if(old_value.header.relocate != gc_bits::moved) {
-						// TODO perform relocate
+					gc_bits object_header = ob->count.load(std::memory_order_acquire);
+
+					while(object_header.header.relocate != gc_bits::moved) {
+						std::this_thread::yield();
+						object_header = ob->count.load(std::memory_order_acquire);
 					}
 					// forwarded address stored in the corpse of the old object
-					gc_bits relocated_location = ob->count.load(std::memory_order_acquire);
-					new_value.address.page_number = relocated_location.address.page_number;
-					new_value.address.page_offset = relocated_location.address.page_offset;
+					new_value.address.page_number = object_header.address.page_number;
+					new_value.address.page_offset = object_header.address.page_offset;
 				}
 				if(pointer.compare_exchange_strong(old_value, new_value, std::memory_order_release)) {
 					return new_value;
@@ -933,19 +1030,6 @@ namespace garbage_collection
 
 		template<typename T>
 		friend struct reference_t;
-		template<typename T>
-		friend struct handle_t;
-		template<typename T>
-		friend struct global_t;
-
-		template<typename To, typename From>
-		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
-		template<typename T, typename... Args>
-		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
-		template<typename T>
-		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(size_t size);
-		template<typename T>
-		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
 		raw_reference(gc_bits bits) noexcept : pointer(bits) {
 		}
@@ -967,10 +1051,16 @@ namespace garbage_collection
 		reference_t() noexcept : base_type() {
 		}
 
+		~reference_t() noexcept = default;
+
 		reference_t(std::nullptr_t) noexcept : base_type(nullptr) {
 		}
 
 		reference_t(const my_type& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+		}
+
+		reference_t(my_type&& rhs) noexcept : base_type(nullptr) {
 			assign(rhs);
 		}
 
@@ -981,7 +1071,30 @@ namespace garbage_collection
 		}
 
 		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
+		reference_t(reference_t<U>&& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+			fix_reference(rhs);
+		}
+
+		my_type& operator=(const my_type& rhs) noexcept {
+			base_type::operator=(rhs);
+			return *this;
+		}
+
+		my_type& operator=(my_type&& rhs) noexcept {
+			base_type::operator=(rhs);
+			return *this;
+		}
+
+		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
 		my_type& operator=(const reference_t<U>& rhs) noexcept {
+			base_type::operator=(rhs);
+			fix_reference(rhs);
+			return *this;
+		}
+
+		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
+		my_type& operator=(reference_t<U>&& rhs) noexcept {
 			base_type::operator=(rhs);
 			fix_reference(rhs);
 			return *this;
@@ -992,13 +1105,18 @@ namespace garbage_collection
 			return *this;
 		}
 
-		referenced_type* operator->() const noexcept {
+		template<typename U = T>
+		std::enable_if_t<!is_array_v<U>, referenced_type*>
+		operator->() const noexcept {
 			return _gc_resolve();
 		}
 
 		template<typename U = T>
 		std::enable_if_t<is_array_v<U>, typename U::element_type&>
 		operator[](size_t offset) const noexcept {
+			if(!*this) {
+				std::terminate();
+			}
 			return _gc_resolve()->operator[](offset);
 		}
 
@@ -1008,11 +1126,11 @@ namespace garbage_collection
 		}
 
 		template<typename U>
-		void fix_reference(const reference_t<U>& ref) {
+		void fix_reference(const reference_t<U>& ref) noexcept {
 			U* source = ref._gc_resolve();
 			T* destination = dynamic_cast<T*>(source);
-			object_base* ob = dynamic_cast<object_base*>(source);
-			ptrdiff_t typed_offset = (reinterpret_cast<byte*>(destination) - reinterpret_cast<byte*>(ob)) / static_cast<ptrdiff_t>(sizeof(void*));
+			const object_base* ob = source;
+			const ptrdiff_t typed_offset = (reinterpret_cast<std::byte*>(destination) - reinterpret_cast<const std::byte*>(ob)) / gsl::narrow_cast<ptrdiff_t>(sizeof(void*));
 			gc_bits current = pointer.load(std::memory_order_acquire);
 			current.address.typed_offset = typed_offset;
 			pointer.store(current, std::memory_order_release);
@@ -1028,7 +1146,7 @@ namespace garbage_collection
 		friend struct array;
 
 		template<typename To, typename From>
-		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs);
+		friend handle_t<normalize_t<To>> gc_cast(const reference_t<From>& rhs) noexcept;
 		template<typename T, typename... Args>
 		friend std::enable_if_t<!is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(Args&&... args);
 		template<typename T>
@@ -1037,7 +1155,7 @@ namespace garbage_collection
 		friend std::enable_if_t< is_array_v<normalize_t<T>>, handle_t<normalize_t<T>>> gcnew(std::initializer_list<typename normalize_t<T>::element_type> init);
 
 		template<typename T>
-		static reference_t<T> make_reference(object_base* obj, T* typed) {
+		static reference_t<T> make_reference(gsl::not_null<object_base*> obj, gsl::not_null<T*> typed) noexcept {
 			return reference_t<T>(gc_bits::_gc_build_reference(obj, typed));
 		}
 
@@ -1061,8 +1179,28 @@ namespace garbage_collection
 			assign(rhs);
 		}
 
+		registered_reference_t(my_type&& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+		}
+
+		my_type& operator=(const my_type& rhs) {
+			base_type::operator=(rhs);
+			return *this;
+		}
+
+		my_type& operator=(my_type&& rhs) {
+			base_type::operator=(rhs);
+			return *this;
+		}
+
 		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
 		registered_reference_t(const reference_t<U>& rhs) noexcept : base_type(nullptr) {
+			assign(rhs);
+			this->fix_reference(rhs);
+		}
+
+		template<typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*> || (is_array_v<T> && std::is_same_v<T, U>) > >
+		registered_reference_t(reference_t<U>&& rhs) noexcept : base_type(nullptr) {
 			assign(rhs);
 			this->fix_reference(rhs);
 		}
@@ -1077,13 +1215,21 @@ namespace garbage_collection
 		virtual void assign(const raw_reference& rhs) noexcept override {
 			raw_reference::assign(rhs);
 			if(*this) {
-				static_cast<Self*>(this)->get_registrar()->register_reference(this, this->_gc_resolve());
+				dynamic_cast<Self*>(this)->get_registrar()->register_reference(this, this->_gc_resolve());
+			}
+		}
+
+		virtual void assign(raw_reference&& rhs) noexcept override {
+			raw_reference::assign(rhs);
+			if(*this) {
+				dynamic_cast<Self*>(this)->get_registrar()->unregister_reference(&rhs);
+				dynamic_cast<Self*>(this)->get_registrar()->register_reference(this, this->_gc_resolve());
 			}
 		}
 
 		virtual void clear() noexcept override {
 			if(*this) {
-				static_cast<Self*>(this)->get_registrar()->unregister_reference(this);
+				dynamic_cast<Self*>(this)->get_registrar()->unregister_reference(this);
 			}
 			raw_reference::clear();
 		}
@@ -1110,7 +1256,7 @@ namespace garbage_collection
 		using base_type::base_type;
 		using base_type::operator=;
 
-		reference_registry* get_registrar() const {
+		reference_registry* get_registrar() const noexcept {
 			return &this->the_gc.globals;
 		}
 
@@ -1130,7 +1276,7 @@ namespace garbage_collection
 		using base_type::base_type;
 		using base_type::operator=;
 
-		reference_registry* get_registrar() const {
+		reference_registry* get_registrar() const noexcept {
 			return &this_thread_data;
 		}
 
@@ -1141,7 +1287,7 @@ namespace garbage_collection
 	};
 
 	template<typename To, typename From>
-	[[nodiscard]] handle_t<normalize_t<To>> inline gc_cast(const reference_t<From>& rhs) {
+	[[nodiscard]] handle_t<normalize_t<To>> inline gc_cast(const reference_t<From>& rhs) noexcept {
 		using real_type = normalize_t<To>;
 		if(!rhs) {
 			return handle_t<real_type>();
@@ -1150,9 +1296,9 @@ namespace garbage_collection
 		From* object = rhs._gc_resolve();
 		real_type* destination = dynamic_cast<real_type*>(object);
 		if(destination) {
-			object_base* base = dynamic_cast<object_base*>(destination);
+			gsl::not_null<object_base*> base = destination;
 			base->_gc_add_ref();
-			return handle_t<real_type>(reference_t<real_type>(gc_bits::_gc_build_reference(base, destination)));
+			return handle_t<real_type>(reference_t<real_type>::make_reference(base, gsl::not_null<real_type*>(destination)));
 		} else {
 			return handle_t<real_type>();
 		}
@@ -1177,9 +1323,9 @@ namespace garbage_collection
 			throw std::bad_alloc();
 		}
 
-		real_type* typed = new(memory) real_type(std::forward<Args>(args)...);
+		gsl::not_null<real_type*> typed = new(memory) real_type(std::forward<Args>(args)...);
 		the_gc.mark_allocated(memory);
-		object_base* base = dynamic_cast<object_base*>(typed);
+		gsl::not_null<object_base*> base = typed;
 		base->_gc_set_block_unsafe(memory, base);
 		return handle_t<real_type>(reference_t<real_type>::make_reference(base, typed));
 	}
@@ -1198,9 +1344,9 @@ namespace garbage_collection
 			throw std::bad_alloc();
 		}
 
-		real_type* typed = new(memory) real_type(len);
+		gsl::not_null<real_type*> typed = new(memory) real_type(len);
 		the_gc.mark_allocated(memory);
-		object_base* base = dynamic_cast<object_base*>(typed);
+		gsl::not_null<object_base*> base = typed;
 		base->_gc_set_block_unsafe(memory, base);
 		return handle_t<real_type>(reference_t<real_type>::make_reference(base, typed));
 	}
@@ -1214,17 +1360,22 @@ namespace garbage_collection
 		thread_data::guard_unsafe g(this_thread_data.make_guard());
 		using real_type = normalize_t<T>;
 
-		size_t size = init.size();
-		void* memory = the_gc.the_arena.allocate(real_type::allocation_size(size));
+		void* memory = the_gc.the_arena.allocate(real_type::allocation_size(init.size()));
 		if(!memory) {
 			throw std::bad_alloc();
 		}
 
-		real_type* typed = new(memory) real_type(init);
+		gsl::not_null<real_type*> typed = new(memory) real_type(init);
 		the_gc.mark_allocated(memory);
-		object_base* base = dynamic_cast<object_base*>(typed);
+		gsl::not_null<object_base*> base = typed;
 		base->_gc_set_block_unsafe(memory, base);
 		return handle_t<real_type>(reference_t<real_type>::make_reference(base, typed));
+	}
+
+	template<typename T>
+	[[nodiscard]]
+	std::enable_if_t<is_array_v<normalize_t<T>> && std::is_array_v<T> && std::extent_v<T> != 0, handle_t<normalize_t<T>>> inline gcnew() {
+		return gcnew<T>(std::extent_v<T>);
 	}
 
 #pragma warning(pop)

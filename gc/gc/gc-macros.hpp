@@ -78,7 +78,7 @@
 #define DEFINE_GC_MEMBERS(BASES, MEMBERS) \
 	DECLARE_GC_MEMBERS_IND(MEMBERS) \
 	public: \
-	virtual void _gc_trace(garbage_collection::visitor* visitor__) const override { \
+	virtual void _gc_trace(gsl::not_null<garbage_collection::visitor*> visitor__) const noexcept override { \
 		VISIT_GC_MEMBERS_IND(MEMBERS) \
 		VISIT_GC_BASES_IND(BASES) \
 	}

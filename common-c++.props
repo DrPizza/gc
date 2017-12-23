@@ -5,6 +5,10 @@
   <PropertyGroup>
     <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <CodeAnalysisRuleSet>AllRules.ruleset</CodeAnalysisRuleSet>
+    <RunCodeAnalysis>true</RunCodeAnalysis>
+    <EnableCppCoreCheck>true</EnableCppCoreCheck>
+    <EnableExperimentalCppCoreCheck>true</EnableExperimentalCppCoreCheck>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -27,6 +31,7 @@
       <ControlFlowGuard>Guard</ControlFlowGuard>
       <AssemblerOutput>All</AssemblerOutput>
       <SDLCheck>true</SDLCheck>
+      <EnablePREfast>true</EnablePREfast>
     </ClCompile>
     <Link>
       <LargeAddressAware>true</LargeAddressAware>

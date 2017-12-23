@@ -8,11 +8,18 @@
 
 #include "gc/detail/ws-queue.hpp"
 
+#pragma warning(push)
+#pragma warning(disable: 4061 4242 4244 4365 26426 26429 26439 26440 26461 26482 26493 26494 26496 26497)
+extern "C" {
+#include "xed/xed-interface.h"
+}
+#pragma warning(pop)
+
 void* read_write;
 void* read_only;
 ULARGE_INTEGER segment_size;
 
-bool is_in_ro_segment(const void* const address) {
+bool is_in_ro_segment(const void* const address) noexcept {
 	if(static_cast<const byte*>(read_only) <= static_cast<const byte*>(address  )
 	&& static_cast<const byte*>(address  ) <  static_cast<const byte*>(read_only) + segment_size.QuadPart) {
 		return true;
@@ -20,64 +27,129 @@ bool is_in_ro_segment(const void* const address) {
 	return false;
 }
 
-size_t get_ro_offset(const void* const address) {
+std::size_t get_ro_offset(const void* const address) noexcept {
 	if(is_in_ro_segment(address)) {
-		return static_cast<size_t>(static_cast<const byte*>(address) - static_cast<const byte*>(read_only));
+		return gsl::narrow_cast<std::size_t>(static_cast<const byte*>(address) - static_cast<const byte*>(read_only));
 	} else {
 		return 0;
 	}
 }
 
-void* ro_to_rw(const void* const address) {
+void* ro_to_rw(const void* const address) noexcept {
 	if(is_in_ro_segment(address)) {
-		return static_cast<void*>(static_cast<byte*>(read_write) + get_ro_offset(address));
+		return static_cast<byte*>(read_write) + get_ro_offset(address);
 	} else {
 		return nullptr;
 	}
 }
 
+#pragma warning(push)
+#pragma warning(disable: 4061) // warning C4061: enumerator '%s' in switch of enum '%s' is not explicitly handled by a case label
 [[gsl::suppress(type.1)]]
-int filter(unsigned int, _EXCEPTION_POINTERS* ep) {
+LONG WINAPI exception_filter(_EXCEPTION_POINTERS* ep) noexcept {
 	if(ep->ExceptionRecord->ExceptionCode != 0xc000'0005) { // access denied
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
 	if(ep->ExceptionRecord->ExceptionInformation[0] != 1) { // write
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
-	const size_t target = ep->ExceptionRecord->ExceptionInformation[1];
+	const std::size_t target = ep->ExceptionRecord->ExceptionInformation[1];
 	if(!is_in_ro_segment(reinterpret_cast<void*>(target))) {
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
-	// TODO disassemble ep->ExceptionRecord->ExceptionAddress to directly find the memory address
-	       if(ep->ContextRecord->Rax == target) {
-		ep->ContextRecord->Rax = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->Rbx == target) {
-		ep->ContextRecord->Rbx = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->Rcx == target) {
-		ep->ContextRecord->Rcx = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->Rdx == target) {
-		ep->ContextRecord->Rdx = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R8 == target) {
-		ep->ContextRecord->R8 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R9 == target) {
-		ep->ContextRecord->R9 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R10 == target) {
-		ep->ContextRecord->R10 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R11 == target) {
-		ep->ContextRecord->R11 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R12 == target) {
-		ep->ContextRecord->R12 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R13 == target) {
-		ep->ContextRecord->R13 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R14 == target) {
-		ep->ContextRecord->R14 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else if(ep->ContextRecord->R15 == target) {
-		ep->ContextRecord->R15 = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<void*>(target)));
-	} else {
+
+	const xed_machine_mode_enum_t mmode = XED_MACHINE_MODE_LONG_64;
+	const xed_address_width_enum_t stack_addr_width = XED_ADDRESS_WIDTH_64b;
+	xed_decoded_inst_t xedd[1];
+	xed_decoded_inst_zero(xedd);
+	xed_decoded_inst_set_mode(xedd, mmode, stack_addr_width);
+	const xed_error_enum_t xed_error = xed_decode(xedd, reinterpret_cast<const unsigned char*>(ep->ContextRecord->Rip), 15);
+	if(xed_error != XED_ERROR_NONE) {
+		std::printf("Unhandled error code %s\n", xed_error_enum_t2str(xed_error));
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
 
+	const unsigned int memops = xed_decoded_inst_number_of_memory_operands(xedd);
+	if(0 == memops) {
+		return EXCEPTION_EXECUTE_HANDLER;
+	}
+	DWORD64* memory_register = nullptr;
+	for(unsigned int i = 0; i < memops; ++i) {
+		if(!xed_decoded_inst_mem_written(xedd, i)) {
+			continue;
+		}
+
+		const xed_reg_enum_t base = xed_decoded_inst_get_base_reg(xedd, i);
+		if(base == XED_REG_INVALID) {
+			continue;
+		}
+
+		switch(base) {
+		case XED_REG_RAX:
+			memory_register = &ep->ContextRecord->Rax;
+			break;
+		case XED_REG_RBX:
+			memory_register = &ep->ContextRecord->Rbx;
+			break;
+		case XED_REG_RCX:
+			memory_register = &ep->ContextRecord->Rcx;
+			break;
+		case XED_REG_RDX:
+			memory_register = &ep->ContextRecord->Rdx;
+			break;
+		case XED_REG_RSP:
+			memory_register = &ep->ContextRecord->Rsp;
+			break;
+		case XED_REG_RBP:
+			memory_register = &ep->ContextRecord->Rbp;
+			break;
+		case XED_REG_RSI:
+			memory_register = &ep->ContextRecord->Rsi;
+			break;
+		case XED_REG_RDI:
+			memory_register = &ep->ContextRecord->Rdi;
+			break;
+		case XED_REG_R8:
+			memory_register = &ep->ContextRecord->R8;
+			break;
+		case XED_REG_R9:
+			memory_register = &ep->ContextRecord->R9;
+			break;
+		case XED_REG_R10:
+			memory_register = &ep->ContextRecord->R10;
+			break;
+		case XED_REG_R11:
+			memory_register = &ep->ContextRecord->R11;
+			break;
+		case XED_REG_R12:
+			memory_register = &ep->ContextRecord->R12;
+			break;
+		case XED_REG_R13:
+			memory_register = &ep->ContextRecord->R13;
+			break;
+		case XED_REG_R14:
+			memory_register = &ep->ContextRecord->R14;
+			break;
+		case XED_REG_R15:
+			memory_register = &ep->ContextRecord->R15;
+			break;
+		default:
+			continue;
+		}
+		if(memory_register != nullptr) {
+			break;
+		}
+	}
+	if(memory_register == nullptr) {
+		return EXCEPTION_EXECUTE_HANDLER;
+	}
+	*memory_register = reinterpret_cast<DWORD64>(ro_to_rw(reinterpret_cast<const void*>(*memory_register)));
 	return EXCEPTION_CONTINUE_EXECUTION;
+}
+#pragma warning(pop)
+
+int filter(unsigned int, _EXCEPTION_POINTERS* ep) noexcept {
+	return exception_filter(ep);
 }
 
 struct my_object : garbage_collection::object {
@@ -85,20 +157,20 @@ struct my_object : garbage_collection::object {
 		std::cout << "Hello, World!" << std::endl;
 	}
 
-	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
+	virtual void _gc_trace(gsl::not_null<garbage_collection::visitor*> visitor) const noexcept override {
 		garbage_collection::object::_gc_trace(visitor);
 	}
 };
 
 struct ambiguous_object : garbage_collection::object {
-	ambiguous_object(size_t parameter) : value(parameter) {
+	ambiguous_object(size_t parameter) noexcept : value(parameter) {
 	}
 
-	void foo() const {
+	void foo() const volatile {
 		std::cout << "foo: " << value << std::endl;
 	}
 
-	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
+	virtual void _gc_trace(gsl::not_null<garbage_collection::visitor*> visitor) const noexcept override {
 		garbage_collection::object::_gc_trace(visitor);
 	}
 
@@ -108,14 +180,14 @@ private:
 
 struct left : garbage_collection::object
 {
-	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
+	virtual void _gc_trace(gsl::not_null<garbage_collection::visitor*> visitor) const noexcept override {
 		garbage_collection::object::_gc_trace(visitor);
 	}
 };
 
 struct right : garbage_collection::object
 {
-	virtual void _gc_trace(garbage_collection::visitor* visitor) const override {
+	virtual void _gc_trace(gsl::not_null<garbage_collection::visitor*> visitor) const noexcept override {
 		garbage_collection::object::_gc_trace(visitor);
 	}
 };
@@ -131,8 +203,8 @@ struct right : garbage_collection::object
 
 struct combined : left, right
 {
-	combined() : ao1(garbage_collection::gcnew<ambiguous_object>(10u)),
-	             ao2(garbage_collection::gcnew<ambiguous_object>(11u))
+	combined() noexcept : ao1(garbage_collection::gcnew<ambiguous_object>(10u)),
+	                      ao2(garbage_collection::gcnew<ambiguous_object>(11u))
 	{
 		ao1->foo();
 		ao2->foo();
@@ -225,41 +297,6 @@ struct Nested : garbage_collection::object {
 	)
 };
 
-//#include <variant>
-//#include <string_view>
-//#include <vector>
-//#include <unordered_map>
-//#include <utility>
-//
-//namespace json {
-//	struct Value;
-//	using Null = std::nullptr_t;
-//	using Bool = bool;
-//	using Number = double;
-//	using String = std::string_view;
-//	using Array = std::vector<Value>;
-//	using Object = std::unordered_map<String, Value>;
-//	struct Value : public std::variant<Object, Array, String, Number, Bool, Null> {
-//		using variant::variant;
-//	};
-//} // end namespace json
-//
-//#include <cassert>
-//
-//int main() {
-//	auto const Obj = json::Object{
-//		{ "Hello", json::Value{ 1.5 } },
-//		{ "World", json::Value{ true } },
-//		{ "Foo", json::Value{ nullptr } },
-//		{ "Bar", json::Value{ "Majestic" } } };
-//
-//	assert(std::get<json::Number>(Obj.at("Hello")) == 1.5);
-//	assert(std::get<json::Bool>(Obj.at("World")) == true);
-//	assert(std::get<json::Null>(Obj.at("Foo")) == nullptr);
-//	assert(std::get<json::String>(Obj.at("Bar")) == json::String{ "Majestic" });
-//	return 0;
-//}
-
 int main() {
 	using namespace garbage_collection;
 #if 0
@@ -281,15 +318,17 @@ int main() {
 
 	{
 		struct alignas(16) X {
-			X() noexcept : val(0) {}
-			X(size_t v) : val(v) {}
+			X() noexcept : val(0) {
+			}
+			X(size_t v) : val(v) {
+			}
 			X(const X&) = default;
 
 			size_t val;
 		};
 		work_stealing_queue<X> wsq;
-		wsq.push(X{1});
-		wsq.push(X{2});
+		wsq.push(X{ 1 });
+		wsq.push(X{ 2 });
 		auto popped = wsq.pop();
 		if(popped) {
 			std::cout << popped->val << std::endl;
@@ -314,6 +353,7 @@ int main() {
 		//arena.deallocate(one);
 		//arena.deallocate(zero);
 	}
+#if 1
 	the_gc.collect();
 	{
 		handle<my_object> obj = gcnew<my_object>();
@@ -393,10 +433,14 @@ int main() {
 	{
 		handle<D3> d3 = gcnew<D3>();
 	}
+	{
+		handle<size_t[]> sa1 = gcnew<size_t[1]>();
+		//handle<size_t[][]> sa2 = gcnew<size_t[][]>(5);
+	}
 #if 0
 	{
-		handle<box<int>> b1 = gc.gcnew<box<int>>(1);
-		handle<int> b2 = gc.gcnew<int>(1);
+		handle<box<int>> b1 = gcnew<box<int>>(1);
+		handle<int> b2 = gcnew<int>(1);
 
 #define TEST(type) std::cout << #type << " normalized: " << typeid(normalize_t<type>).name() << std::endl
 		TEST(int);
@@ -435,25 +479,27 @@ int main() {
 	the_gc.collect();
 
 	return 0;
+#endif
+	xed_tables_init();
+	::SetUnhandledExceptionFilter(&exception_filter);
 
-	//segment_size.QuadPart = 1 << 30;
-	//HANDLE section = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, segment_size.HighPart, segment_size.LowPart, nullptr);
-	//read_write = MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, segment_size.QuadPart);
-	//read_only = MapViewOfFile(section, FILE_MAP_READ, 0, 0, segment_size.QuadPart);
+	segment_size.QuadPart = 1 << 30;
+	HANDLE section = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, segment_size.HighPart, segment_size.LowPart, nullptr);
+	read_write = MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, segment_size.QuadPart);
+	read_only = MapViewOfFile(section, FILE_MAP_READ, 0, 0, segment_size.QuadPart);
 
-	//int* rw = static_cast<int*>(read_write);
-	//int* ro = static_cast<int*>(read_only);
 
-	//int ro1 = *ro;
-	//*rw = 1;
-	//int ro2 = *ro;
+	int* rw = static_cast<int*>(read_write);
+	int* ro = static_cast<int*>(read_only);
 
-	//std::cout << ro1 << std::endl;
-	//std::cout << ro2 << std::endl;
+	std::cout << *ro << std::endl;
+	*rw = 1;
+	std::cout << *ro << std::endl;
 
-	//__try {
-	//	*ro = 2;
-	//} __except(filter(GetExceptionCode(), GetExceptionInformation())) {
-	//	
-	//}
+	*ro = 2;
+	(*ro)++;
+	*ro += 1;
+	*ro *= 2;
+
+	std::cout << *ro << std::endl;
 }
